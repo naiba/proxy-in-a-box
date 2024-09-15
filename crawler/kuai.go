@@ -1,22 +1,29 @@
 package crawler
 
 import (
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/naiba/proxyinabox"
 )
 
-//Kuai 快代理
-type Kuai struct {
+var parseIpList = regexp.MustCompile(`fpsList = (.*);\n*.*totalCount\s=\s'(\d*)\';`)
+
+// kuaiDaili 快代理
+type kuaiDaili struct {
 	urls []string
 }
 
-func newKuai() *Kuai {
-	this := new(Kuai)
+type kuaiProxyItem struct {
+	IP   string
+	Port string
+}
+
+func newKuaiDaili() *kuaiDaili {
+	this := new(kuaiDaili)
 	this.urls = []string{
 		"https://www.kuaidaili.com/free/inha/",
 		"https://www.kuaidaili.com/free/intr/",
@@ -24,78 +31,53 @@ func newKuai() *Kuai {
 	return this
 }
 
-//Fetch fetch all proxies
-func (k *Kuai) Fetch() error {
-
-	var currPageNo = 1
-	var ended bool
-
+// Fetch fetch all proxies
+func (k *kuaiDaili) Fetch() error {
 	for _, pageURL := range k.urls {
-
+		var currPageNo = 1
+		var count int
+		var ended bool
 		for !ended {
-
-			num := 0
-
-			doc, err := getDocFromURL(pageURL + strconv.Itoa(currPageNo))
+			time.Sleep(time.Second * 3)
+			body, err := getDocFromURL(pageURL + strconv.Itoa(currPageNo))
 			if err != nil {
 				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
-				return err
+				continue
+			}
+			matches := parseIpList.FindStringSubmatch(body)
+			if len(matches) < 3 {
+				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", "parse error")
+				continue
 			}
 
-			ipList := doc.Find("div#list table").First()
-			ipList.Find("tr").Each(func(i int, tr *goquery.Selection) {
+			proxyListJson := matches[1]
+			totalCount, err := strconv.Atoi(matches[2])
+			if err != nil {
+				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
+				continue
+			}
 
-				if i == 0 {
-					return
+			var proxyList []kuaiProxyItem
+			if err = json.Unmarshal([]byte(proxyListJson), &proxyList); err != nil {
+				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
+				continue
+			}
+
+			for _, p := range proxyList {
+				validateJobs <- proxyinabox.Proxy{
+					IP:       p.IP,
+					Port:     p.Port,
+					Platform: proxyinabox.PlatformKuai,
 				}
+			}
 
-				var p proxyinabox.Proxy
-				tr.Children().EachWithBreak(func(j int, td *goquery.Selection) bool {
-					if j > 1 {
-						return false
-					}
-					switch j {
-					case 0:
-						p.IP = td.Text()
-					case 1:
-						p.Port = td.Text()
-					}
-					return true
-				})
-				p.Platform = 2
-				//p.HTTPS = strings.Contains(tr.Text(), "HTTPS")
-				validateJobs <- p
-				num++
-			})
+			count += len(proxyList)
 
-			flag := false
-			nav := doc.Find("div#listnav").First()
-			nav.Find("li").EachWithBreak(func(i int, li *goquery.Selection) bool {
-				if strings.TrimSpace(li.Text()) == strconv.Itoa(currPageNo) {
-					flag = true
-					return true
-				}
-				if flag {
+			ended = count >= totalCount
+			currPageNo++
 
-					currPageNo++
-
-					// 如果当前类型代理遍历完毕
-					if strings.TrimSpace(li.Text()) == "页" {
-						currPageNo = 1
-						ended = true
-					}
-					return false
-				}
-				return true
-			})
-
-			fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", num, "proxies.")
-
-			//delay
-			time.Sleep(time.Second * 3)
+			fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", len(proxyList), "proxies.")
 		}
-		ended = false
 	}
-
 	return nil
 }

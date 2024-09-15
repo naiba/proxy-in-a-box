@@ -4,3 +4,4 @@
 *.pem
 cmd/proxy-in-a-box/proxy-in-a-box
 pb.yaml
+proxyinabox.db

@@ -4,13 +4,12 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 )
 
-//Dump rt
+// Dump rt
 func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Request) {
 	var clientRequestDump []byte
 	var remoteResponseDump []byte
@@ -55,7 +54,7 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		clientResponse.Header().Del("Content-Encoding")
 		body, err = gzipDecompression(remoteResponse.Body)
 	default:
-		body, err = ioutil.ReadAll(remoteResponse.Body)
+		body, err = io.ReadAll(remoteResponse.Body)
 	}
 	if err != nil {
 		fmt.Println("[MITM]", "read body", "[❎]", err)
@@ -130,7 +129,7 @@ func gzipDecompression(r io.Reader) ([]byte, error) {
 	reader, _ := gzip.NewReader(r)
 	var n int
 	for {
-		buf := make([]byte, 1024)
+		buf := make([]byte, 102400)
 		n, err = reader.Read(buf)
 		if err != nil && err != io.EOF {
 			fmt.Println("[MITM]", "decompress gzip", "[❎]", err)

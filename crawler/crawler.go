@@ -1,14 +1,13 @@
 package crawler
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
-	"github.com/naiba/com"
 	"github.com/naiba/proxyinabox"
 	"github.com/parnurzeal/gorequest"
 )
@@ -30,39 +29,35 @@ type validateJSON struct {
 
 func initC() {
 	validateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
-	//start worker
 	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
 		go validator(i, validateJobs)
 	}
 }
 
-func getDocFromURL(url string) (*goquery.Document, error) {
-
-	_, body, errs := gorequest.New().Get(url).
-		Set("User-Agent", com.RandomUserAgent()).
+func getDocFromURL(url string) (string, error) {
+	client := gorequest.New().
 		Retry(3, time.Second*3).
+		Timeout(time.Second * 20)
+	if p, ok := proxyinabox.CI.RandomProxy(); ok {
+		client.Proxy(p)
+	}
+	_, body, errs := client.
+		TLSClientConfig(&tls.Config{InsecureSkipVerify: true}).
+		Get(url).
+		Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36").
 		End()
 	if len(errs) > 0 {
-		return nil, errs[0]
+		return "", errs[0]
 	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-
-	return doc, nil
-
+	return body, nil
 }
 
-//FetchProxies fetch new proxies
+// FetchProxies fetch new proxies
 func FetchProxies() {
 	cs := []proxyinabox.ProxyCrawler{
-		newKuai(),
-		newXici(),
-		new66IP(),
+		newKuaiDaili(),
+		newProxyScrape(),
 	}
-
 	for _, c := range cs {
 		go c.Fetch()
 	}
@@ -79,7 +74,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			pendingValidate.Store(proxy, nil)
 			var resp validateJSON
 			start := time.Now().Unix()
-			_, _, errs := gorequest.New().Timeout(time.Second*7).Retry(3, time.Second*2, http.StatusInternalServerError).Proxy(proxy).Get("http://api.ip.la/cn?json").EndStruct(&resp)
+			_, _, errs := gorequest.New().Timeout(time.Second*7).Retry(3, time.Second*2, http.StatusInternalServerError).Proxy(proxy).Get("https://api.myip.la/cn?json").EndStruct(&resp)
 			if len(errs) == 0 && resp.IP == p.IP {
 				p.Country = resp.Location.CountryName
 				p.Provence = resp.Location.Province

@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jinzhu/gorm"
+	"gorm.io/gorm"
 )
 
-//Proxy proxy model
+const (
+	_            = iota
+	PlatformKuai // 快代理
+)
+
+// Proxy proxy model
 type Proxy struct {
 	gorm.Model
 	IP         string `gorm:"type:varchar(15);unique_index"`
@@ -20,7 +25,7 @@ type Proxy struct {
 	LastVerify time.Time
 }
 
-//ProxyService proxy service
+// ProxyService proxy service
 type ProxyService interface {
 	GetUnVerified() ([]Proxy, error)
 }
@@ -30,7 +35,7 @@ func (p Proxy) String() string {
 		p.ID, p.IP, p.Port, p.Country, p.Provence, !p.HTTPS, p.Delay, p.Platform)
 }
 
-//URI get uri
+// URI get uri
 func (p Proxy) URI() string {
 	var proxy string
 	if p.HTTPS {
@@ -41,7 +46,7 @@ func (p Proxy) URI() string {
 	return proxy + p.IP + ":" + p.Port
 }
 
-//ProxyCrawler proxy crawler
+// ProxyCrawler proxy crawler
 type ProxyCrawler interface {
 	Fetch() error
 }

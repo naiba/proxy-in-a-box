@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/naiba/proxyinabox"
+	"golang.org/x/exp/rand"
 )
 
 /*
 ==============
-    代理池
+
+	代理池
+
 ==============
 */
 type proxyEntry struct {
@@ -43,7 +46,9 @@ type proxyList struct {
 
 /*
 ==============
-   域名IP池
+
+	域名IP池
+
 ==============
 */
 type domainScheduling struct {
@@ -53,7 +58,9 @@ type domainScheduling struct {
 
 /*
 ==============
-   IP限流池
+
+	IP限流池
+
 ==============
 */
 type ipActivityEntry struct {
@@ -67,7 +74,9 @@ type ipActivity struct {
 
 /*
 ==============
-   域名限流池
+
+	域名限流池
+
 ==============
 */
 type domainActivity struct {
@@ -79,7 +88,7 @@ type domainActivityList struct {
 	list map[string]*domainActivity
 }
 
-//MemCache memory cache
+// MemCache memory cache
 type MemCache struct {
 	proxies     *proxyList
 	domains     *domainScheduling
@@ -87,7 +96,7 @@ type MemCache struct {
 	domainLimit *domainActivityList
 }
 
-//NewMemCache rt
+// NewMemCache rt
 func NewMemCache() *MemCache {
 	this := &MemCache{
 		proxies: &proxyList{
@@ -169,7 +178,7 @@ func (c *MemCache) gc(dur time.Duration) {
 			for k, v := range c.domains.dl {
 				for i, v1 := range v {
 					if now-v1.n > 3 {
-						deleteProxyEntrySliceItem(v, i)
+						c.domains.dl[k] = append(v[:i], v[i+1:]...)
 					}
 				}
 				if len(v) == 0 {
@@ -183,7 +192,15 @@ func (c *MemCache) gc(dur time.Duration) {
 	}()
 }
 
-//PickProxy rt
+func (c *MemCache) RandomProxy() (string, bool) {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+	if len(c.proxies.pl) == 0 {
+		return "", false
+	}
+	return c.proxies.pl[rand.Intn(len(c.proxies.pl))].p.URI(), true
+}
+
 func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
@@ -202,13 +219,12 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	defer c.domains.l.Unlock()
 	if pl, has := c.domains.dl[domain]; has {
 		sort.Sort(sortableProxyList(pl))
-
 		//清理长久未活动的代理
-		for i, p := range pl {
-			if now-p.n < 3 {
-				candidate[p.p.IP] = struct{}{}
+		for i := 0; i < len(pl); i++ {
+			if now-pl[i].n < 3 {
+				candidate[pl[i].p.IP] = struct{}{}
 			} else {
-				deleteProxyEntrySliceItem(pl, i)
+				c.domains.dl[domain] = append(pl[:i], pl[i+1:]...)
 			}
 		}
 	} else {
@@ -235,7 +251,7 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	return "", fmt.Errorf("%s:all(%d),domain(%s)", "No free agent can be used:", length, domain)
 }
 
-//IPLimiter rt
+// IPLimiter rt
 func (c *MemCache) IPLimiter(req *http.Request) bool {
 	c.ips.l.Lock()
 	defer c.ips.l.Unlock()
@@ -259,7 +275,7 @@ func (c *MemCache) IPLimiter(req *http.Request) bool {
 	return true
 }
 
-//HostLimiter rt
+// HostLimiter rt
 func (c *MemCache) HostLimiter(req *http.Request) bool {
 	c.domainLimit.l.Lock()
 	defer c.domainLimit.l.Unlock()
@@ -290,13 +306,13 @@ func (c *MemCache) HostLimiter(req *http.Request) bool {
 	return len(ds.domains) < proxyinabox.Config.Sys.DomainsPerIP
 }
 
-//HasProxy rt
+// HasProxy rt
 func (c *MemCache) HasProxy(proxy string) bool {
 	_, has := c.proxies.index[proxy]
 	return has
 }
 
-//SaveProxy rt
+// SaveProxy rt
 func (c *MemCache) SaveProxy(p proxyinabox.Proxy) error {
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
@@ -310,7 +326,7 @@ func (c *MemCache) SaveProxy(p proxyinabox.Proxy) error {
 	return nil
 }
 
-//DeleteProxy rt
+// DeleteProxy rt
 func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 	if p.ID == 0 {
 		return
@@ -319,7 +335,9 @@ func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 	defer c.proxies.l.Unlock()
 	for i, e := range c.proxies.pl {
 		if e.p.IP == p.IP {
-			deleteProxyEntrySliceItem(c.proxies.pl, i)
+			delete(c.proxies.index, p.URI())
+			c.proxies.pl = append(c.proxies.pl[:i], c.proxies.pl[i+1:]...)
+			break
 		}
 	}
 	//hard delete
@@ -328,12 +346,4 @@ func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 
 func getIP(str string) string {
 	return strings.Split(str, ":")[0]
-}
-
-func deleteProxyEntrySliceItem(x []*proxyEntry, i int) {
-	if i == len(x)-1 {
-		x = append(x[:i])
-	} else {
-		x = append(x[:i], x[i+1:]...)
-	}
 }

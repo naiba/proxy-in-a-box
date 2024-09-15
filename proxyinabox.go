@@ -1,28 +1,19 @@
 package proxyinabox
 
 import (
-	"github.com/jinzhu/gorm"
-
-	// mysql driver for GORM
-	_ "github.com/go-sql-driver/mysql"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
-//DB instance
+// DB instance
 var DB *gorm.DB
 
-//CI cache instance
+// CI cache instance
 var CI Cache
 
-//Conf config struct
+// Conf config struct
 type Conf struct {
 	Debug bool
-	MySQL struct {
-		Host   string
-		Port   string
-		User   string
-		Pass   string
-		Dbname string
-	} `mapstructure:"mysql"`
 	Redis struct {
 		Host string
 		Port string
@@ -38,10 +29,10 @@ type Conf struct {
 	}
 }
 
-//Config system config
+// Config system config
 var Config Conf
 
-//Init init system
+// Init init system
 func Init() {
 	validateConf()
 	initDB()
@@ -49,12 +40,12 @@ func Init() {
 
 func initDB() {
 	var err error
-	DB, err = gorm.Open("mysql", Config.MySQL.User+":"+Config.MySQL.Pass+"@tcp("+Config.MySQL.Host+":"+Config.MySQL.Port+")/"+Config.MySQL.Dbname+"?charset=utf8mb4&parseTime=True&loc=Local")
+	DB, err = gorm.Open(sqlite.Open("proxyinabox.db"))
 	if err != nil {
 		panic(err)
 	}
 	if Config.Debug {
-		DB.LogMode(true)
+		DB = DB.Debug()
 	}
 	DB.AutoMigrate(&Proxy{})
 }

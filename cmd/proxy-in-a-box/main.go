@@ -6,17 +6,14 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/naiba/proxyinabox/mitm"
-	"github.com/naiba/proxyinabox/service"
-
-	"github.com/naiba/com"
-
 	"github.com/robfig/cron"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/naiba/proxyinabox"
 	"github.com/naiba/proxyinabox/crawler"
+	"github.com/naiba/proxyinabox/mitm"
+	"github.com/naiba/proxyinabox/service"
 )
 
 var configFilePath, httpProxyAddr, httpsProxyAddr string
@@ -48,11 +45,14 @@ var rootCmd = &cobra.Command{
 		select {}
 	},
 	PreRun: func(cmd *cobra.Command, args []string) {
-		//read config
 		viper.SetConfigType("yaml")
 		viper.SetConfigFile(configFilePath)
-		com.PanicIfNotNil(viper.ReadInConfig())
-		com.PanicIfNotNil(viper.Unmarshal(&proxyinabox.Config))
+		if err := viper.ReadInConfig(); err != nil {
+			panic(err)
+		}
+		if err := viper.Unmarshal(&proxyinabox.Config); err != nil {
+			panic(err)
+		}
 	},
 }
 
@@ -82,10 +82,6 @@ func newMITM() *mitm.MITM {
 		IsDirect:  false,
 		Scheduler: proxyinabox.CI.PickProxy,
 		Filter: func(req *http.Request) error {
-			if req.Header.Get("Naiba") != "lifelonglearning" {
-				return fmt.Errorf("%s", "Proxy Authentication Required")
-			}
-			req.Header.Del("Naiba")
 			if !proxyinabox.CI.IPLimiter(req) {
 				return fmt.Errorf("%s", "请求次数过快")
 			}
