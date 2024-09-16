@@ -201,6 +201,12 @@ func (c *MemCache) RandomProxy() (string, bool) {
 	return c.proxies.pl[rand.Intn(len(c.proxies.pl))].p.URI(), true
 }
 
+func (c *MemCache) ProxyLength() int {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+	return len(c.proxies.pl)
+}
+
 func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()

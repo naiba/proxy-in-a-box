@@ -16,7 +16,7 @@ import (
 	"github.com/naiba/proxyinabox/service"
 )
 
-var configFilePath, httpProxyAddr, httpsProxyAddr string
+var configFilePath, httpProxyAddr, httpsProxyAddr, manageAddr string
 var m *mitm.MITM
 var rootCmd = &cobra.Command{
 	Use:   "proxy-in-a-box",
@@ -42,7 +42,15 @@ var rootCmd = &cobra.Command{
 		c.AddFunc("0 "+strconv.Itoa(proxyinabox.Config.Sys.VerifyDuration)+" * * * *", crawler.Verify)
 		c.Start()
 
-		select {}
+		managerHttpServer := http.NewServeMux()
+		managerHttpServer.HandleFunc("/stat", func(w http.ResponseWriter, r *http.Request) {
+			pl := proxyinabox.CI.ProxyLength()
+			w.Write([]byte(fmt.Sprintf("ProxyInABox\n\nHTTP: %s\nHTTPS: %s\n\nAvailable: %d\n", httpProxyAddr, httpsProxyAddr, pl)))
+		})
+		if err := http.ListenAndServe(manageAddr, managerHttpServer); err != nil {
+			fmt.Println("[PIAB]", "panic", "[👻]", err)
+			os.Exit(1)
+		}
 	},
 	PreRun: func(cmd *cobra.Command, args []string) {
 		viper.SetConfigType("yaml")
@@ -60,6 +68,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFilePath, "conf", "c", "./pb.yaml", "config file")
 	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "127.0.0.1:8080", "http proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "127.0.0.1:8081", "https proxy server addr")
+	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "https proxy server addr")
 }
 
 func main() {
@@ -78,7 +87,7 @@ func newMITM() *mitm.MITM {
 			PrivateKeyFile: "proxyinabox.key",
 			CertFile:       "proxyinabox.pem",
 		},
-		Print:     proxyinabox.Config.Debug,
+		// Print:     proxyinabox.Config.Debug,
 		IsDirect:  false,
 		Scheduler: proxyinabox.CI.PickProxy,
 		Filter: func(req *http.Request) error {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -39,12 +38,6 @@ func getProxyClient(proxyURL string) *http.Client {
 	}
 	return &http.Client{
 		Transport: &http.Transport{
-			// disable ssl check
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			// set authorized header
-			ProxyConnectHeader: http.Header{
-				"Naiba": []string{"lifelonglearning"},
-			},
 			Proxy: http.ProxyURL(proxy),
 		}}
 }

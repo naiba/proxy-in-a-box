@@ -10,6 +10,13 @@ import (
 const (
 	_            = iota
 	PlatformKuai // 快代理
+	PlatformAdvancedName
+	PlatformSpysMe
+	PlatformGeoNode
+	PlatformProxyScrape
+	PlatformTheSpeedX
+	PlatformProxyRack
+	PlatformIPRoyal
 )
 
 // Proxy proxy model
@@ -20,7 +27,7 @@ type Proxy struct {
 	Country    string `gorm:"type:varchar(15)"`
 	Provence   string `gorm:"type:varchar(15)"`
 	Platform   int
-	HTTPS      bool
+	Protocol   string
 	Delay      int64
 	LastVerify time.Time
 }
@@ -30,23 +37,20 @@ type ProxyService interface {
 	GetUnVerified() ([]Proxy, error)
 }
 
-func (p Proxy) String() string {
-	return fmt.Sprintf("[PIAB] proxy [🐲] { id:%d %s:%s country:%s provence:%s HTTPS:%t delay:%d platform:%d }",
-		p.ID, p.IP, p.Port, p.Country, p.Provence, !p.HTTPS, p.Delay, p.Platform)
+func (p *Proxy) String() string {
+	return fmt.Sprintf("[PIAB] proxy [🐲] { id:%d %s:%s country:%s provence:%s Protocol:%s delay:%d platform:%d }",
+		p.ID, p.IP, p.Port, p.Country, p.Provence, p.Protocol, p.Delay, p.Platform)
 }
 
-// URI get uri
-func (p Proxy) URI() string {
-	var proxy string
-	if p.HTTPS {
-		proxy = "https://"
-	} else {
-		proxy = "http://"
+func (p *Proxy) URI() string {
+	protocol := p.Protocol
+	if protocol == "" {
+		protocol = "http"
 	}
-	return proxy + p.IP + ":" + p.Port
+	return protocol + "://" + p.IP + ":" + p.Port
 }
 
 // ProxyCrawler proxy crawler
 type ProxyCrawler interface {
-	Fetch() error
+	Fetch()
 }

@@ -4,9 +4,9 @@ import (
 	"net/http"
 )
 
-// Cache rt
 type Cache interface {
 	RandomProxy() (string, bool)
+	ProxyLength() int
 	PickProxy(req *http.Request) (string, error)
 	IPLimiter(req *http.Request) bool
 	HostLimiter(req *http.Request) bool

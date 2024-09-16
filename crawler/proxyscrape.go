@@ -29,7 +29,7 @@ func newProxyScrape() *proxyScrape {
 	return new(proxyScrape)
 }
 
-func (k *proxyScrape) Fetch() error {
+func (k *proxyScrape) Fetch() {
 	for {
 		time.Sleep(time.Second * 3)
 		body, err := getDocFromURL("https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=json")
@@ -44,8 +44,10 @@ func (k *proxyScrape) Fetch() error {
 		}
 		for _, p := range resp.Proxies {
 			validateJobs <- proxyinabox.Proxy{
-				IP:   p.IP,
-				Port: fmt.Sprintf("%d", p.Port),
+				IP:       p.IP,
+				Port:     string(p.Port),
+				Platform: proxyinabox.PlatformProxyScrape,
+				Protocol: p.Protocol,
 			}
 		}
 		fmt.Printf("[PIAB] proxyscrape [✅] crawler find %d proxies\n", len(resp.Proxies))

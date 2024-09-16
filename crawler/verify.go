@@ -1,18 +1,15 @@
 package crawler
 
 import (
-	"net/http"
 	"time"
 
 	"github.com/naiba/proxyinabox"
 	"github.com/naiba/proxyinabox/service"
-	"github.com/parnurzeal/gorequest"
 )
 
 var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
 
-// Init crawler
 func Init() {
 	initV()
 	initC()
@@ -26,7 +23,6 @@ func initV() {
 	}
 }
 
-// Verify verify proxies in database
 func Verify() {
 	list, _ := proxyServiceInstance.GetUnVerified()
 	for _, p := range list {
@@ -39,9 +35,9 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		proxy := p.URI()
 		start := time.Now().Unix()
 		var resp validateJSON
-		_, _, errs := gorequest.New().Timeout(time.Second*5).Retry(3, time.Second*2, http.StatusInternalServerError).Proxy(proxy).Get("https://api.myip.la/cn?json").EndStruct(&resp)
+		_, err := getURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*5, proxy, 3)
 		delay := time.Now().Unix() - start
-		if len(errs) != 0 || resp.IP != p.IP {
+		if err != nil || resp.IP != p.IP {
 			proxyinabox.CI.DeleteProxy(p)
 			continue
 		}

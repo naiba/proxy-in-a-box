@@ -17,7 +17,7 @@ const (
 	basename = "NBMITM"
 )
 
-//TLSConfig TLS配置
+// TLSConfig TLS配置
 type TLSConfig struct {
 	PrivateKeyFile  string
 	CertFile        string
@@ -26,7 +26,7 @@ type TLSConfig struct {
 	ServerTLSConfig *tls.Config
 }
 
-//MITM 中间人
+// MITM 中间人
 type MITM struct {
 	ListenHTTPS bool   //开启 HTTPS 代理服务器
 	HTTPAddr    string //HTTP listen addr
@@ -44,7 +44,7 @@ type MITM struct {
 	issuingCert *keyman.Certificate
 }
 
-//Init mitm
+// Init mitm
 func (m *MITM) Init() {
 	m.cache = cache.New(time.Hour, time.Minute)
 	m.GenerateCA()
@@ -84,6 +84,7 @@ func (m *MITM) Init() {
 				tls.TLS_FALLBACK_SCSV,
 			},
 			PreferServerCipherSuites: true,
+			InsecureSkipVerify:       true,
 		}
 	}
 }

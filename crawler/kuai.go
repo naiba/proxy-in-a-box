@@ -12,8 +12,8 @@ import (
 
 var parseIpList = regexp.MustCompile(`fpsList = (.*);\n*.*totalCount\s=\s'(\d*)\';`)
 
-// kuaiDaili 快代理
-type kuaiDaili struct {
+// kuaiDaiLi 快代理
+type kuaiDaiLi struct {
 	urls []string
 }
 
@@ -22,8 +22,8 @@ type kuaiProxyItem struct {
 	Port string
 }
 
-func newKuaiDaili() *kuaiDaili {
-	this := new(kuaiDaili)
+func newKuaiDaiLi() *kuaiDaiLi {
+	this := new(kuaiDaiLi)
 	this.urls = []string{
 		"https://www.kuaidaili.com/free/inha/",
 		"https://www.kuaidaili.com/free/intr/",
@@ -32,52 +32,56 @@ func newKuaiDaili() *kuaiDaili {
 }
 
 // Fetch fetch all proxies
-func (k *kuaiDaili) Fetch() error {
-	for _, pageURL := range k.urls {
-		var currPageNo = 1
-		var count int
-		var ended bool
-		for !ended {
-			time.Sleep(time.Second * 3)
-			body, err := getDocFromURL(pageURL + strconv.Itoa(currPageNo))
-			if err != nil {
-				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
-				continue
-			}
-			matches := parseIpList.FindStringSubmatch(body)
-			if len(matches) < 3 {
-				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", "parse error")
-				continue
-			}
+func (k *kuaiDaiLi) Fetch() {
+	for _, u := range k.urls {
+		go func(pageURL string) {
+			for {
+				var currPageNo = 1
+				var count int
+				var ended bool
+				for !ended {
+					time.Sleep(time.Second * 3)
+					body, err := getDocFromURL(pageURL + strconv.Itoa(currPageNo))
+					if err != nil {
+						fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
+						continue
+					}
+					matches := parseIpList.FindStringSubmatch(body)
+					if len(matches) < 3 {
+						fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", "parse error")
+						continue
+					}
 
-			proxyListJson := matches[1]
-			totalCount, err := strconv.Atoi(matches[2])
-			if err != nil {
-				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
-				continue
-			}
+					proxyListJson := matches[1]
+					totalCount, err := strconv.Atoi(matches[2])
+					if err != nil {
+						fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
+						continue
+					}
 
-			var proxyList []kuaiProxyItem
-			if err = json.Unmarshal([]byte(proxyListJson), &proxyList); err != nil {
-				fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
-				continue
-			}
+					var proxyList []kuaiProxyItem
+					if err = json.Unmarshal([]byte(proxyListJson), &proxyList); err != nil {
+						fmt.Println("[PIAB]", "kuai", "[❎]", "crawler", err)
+						continue
+					}
 
-			for _, p := range proxyList {
-				validateJobs <- proxyinabox.Proxy{
-					IP:       p.IP,
-					Port:     p.Port,
-					Platform: proxyinabox.PlatformKuai,
+					for _, p := range proxyList {
+						validateJobs <- proxyinabox.Proxy{
+							IP:       p.IP,
+							Port:     p.Port,
+							Platform: proxyinabox.PlatformKuai,
+							Protocol: "http",
+						}
+					}
+
+					count += len(proxyList)
+
+					ended = count >= totalCount
+					currPageNo++
+
+					fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", len(proxyList), "proxies.")
 				}
 			}
-
-			count += len(proxyList)
-
-			ended = count >= totalCount
-			currPageNo++
-
-			fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", len(proxyList), "proxies.")
-		}
+		}(u)
 	}
-	return nil
 }
