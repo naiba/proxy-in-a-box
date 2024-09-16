@@ -53,10 +53,10 @@ func (k *iproyal) Fetch() {
 				}
 			}
 		})
+		fmt.Printf("[PIAB] iproyal [✅] crawler find %d proxies at page %d\n", len(ps), currentPage)
 		for _, p := range ps {
 			validateJobs <- p
 		}
-		fmt.Printf("[PIAB] iproyal [✅] crawler find %d proxies at page %d\n", len(ps), currentPage)
 		if _, ok := doc.Find("span.pagination-link").Last().Attr("disabled"); ok {
 			currentPage = 1
 		} else {

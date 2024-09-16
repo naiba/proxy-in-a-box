@@ -29,22 +29,24 @@ func (k *advancedname) Fetch() {
 					fmt.Printf("[PIAB] advancedname [❎] crawler %v\n", err)
 					continue
 				}
-				var validProxies int
 				proxies := strings.Split(body, "\n")
+				var validProxies []proxyinabox.Proxy
 				for _, p := range proxies {
 					host, port, err := net.SplitHostPort(p)
 					if err != nil {
 						continue
 					}
-					validProxies++
-					validateJobs <- proxyinabox.Proxy{
+					validProxies = append(validProxies, proxyinabox.Proxy{
 						IP:       host,
 						Port:     port,
 						Protocol: protocol,
 						Platform: proxyinabox.PlatformAdvancedName,
-					}
+					})
 				}
-				fmt.Printf("[PIAB] advancedname [✅] crawler find %d proxies\n", validProxies)
+				fmt.Printf("[PIAB] advancedname [✅] crawler find %d proxies\n", len(validProxies))
+				for _, p := range validProxies {
+					validateJobs <- p
+				}
 				time.Sleep(time.Minute * 5)
 			}
 		}(u, strings.Split(u, "type=")[1])

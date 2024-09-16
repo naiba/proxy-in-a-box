@@ -33,7 +33,7 @@ func (k *spysme) Fetch() {
 					fmt.Printf("[PIAB] spysme [❎] crawler %v\n", err)
 					continue
 				}
-				var validProxies int
+				var validProxies []proxyinabox.Proxy
 				proxies := strings.Split(body, "\n")
 				for _, p := range proxies {
 					hostPort, _, ok := strings.Cut(p, " ")
@@ -44,15 +44,17 @@ func (k *spysme) Fetch() {
 					if err != nil {
 						continue
 					}
-					validProxies++
-					validateJobs <- proxyinabox.Proxy{
+					validProxies = append(validProxies, proxyinabox.Proxy{
 						IP:       host,
 						Port:     port,
 						Platform: proxyinabox.PlatformSpysMe,
 						Protocol: protocol,
-					}
+					})
 				}
-				fmt.Printf("[PIAB] spysme [✅] crawler find %d proxies\n", validProxies)
+				fmt.Printf("[PIAB] spysme [✅] crawler find %d proxies\n", len(validProxies))
+				for _, p := range validProxies {
+					validateJobs <- p
+				}
 				time.Sleep(time.Minute * 30)
 			}
 		}(urlSources[i], protocols[i])

@@ -65,6 +65,8 @@ func (k *kuaiDaiLi) Fetch() {
 						continue
 					}
 
+					fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", len(proxyList), "proxies.")
+
 					for _, p := range proxyList {
 						validateJobs <- proxyinabox.Proxy{
 							IP:       p.IP,
@@ -78,8 +80,6 @@ func (k *kuaiDaiLi) Fetch() {
 
 					ended = count >= totalCount
 					currPageNo++
-
-					fmt.Println("[PIAB]", "kuai", "[🍾]", "crawler", len(proxyList), "proxies.")
 				}
 			}
 		}(u)

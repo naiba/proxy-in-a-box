@@ -42,6 +42,7 @@ func (k *proxyScrape) Fetch() {
 			fmt.Printf("[PIAB] proxyscrape [❎] crawler %v\n", err)
 			continue
 		}
+		fmt.Printf("[PIAB] proxyscrape [✅] crawler find %d proxies\n", len(resp.Proxies))
 		for _, p := range resp.Proxies {
 			validateJobs <- proxyinabox.Proxy{
 				IP:       p.IP,
@@ -50,7 +51,6 @@ func (k *proxyScrape) Fetch() {
 				Protocol: p.Protocol,
 			}
 		}
-		fmt.Printf("[PIAB] proxyscrape [✅] crawler find %d proxies\n", len(resp.Proxies))
 		time.Sleep(time.Minute * 5)
 	}
 }

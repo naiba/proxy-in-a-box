@@ -41,6 +41,7 @@ func (k *geonode) Fetch() {
 			fmt.Printf("[PIAB] geonode [❎] crawler %v\n", err)
 			continue
 		}
+		fmt.Printf("[PIAB] geonode [✅] crawler find %d proxies\n", len(resp.Data))
 		for _, p := range resp.Data {
 			validateJobs <- proxyinabox.Proxy{
 				IP:       p.IP,
@@ -54,6 +55,5 @@ func (k *geonode) Fetch() {
 		} else {
 			currentPage++
 		}
-		fmt.Printf("[PIAB] geonode [✅] crawler find %d proxies\n", len(resp.Data))
 	}
 }

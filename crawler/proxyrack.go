@@ -45,6 +45,7 @@ func (k *proxyRack) Fetch() {
 			fmt.Printf("[PIAB] proxyrack [❎] crawler %v\n", err)
 			continue
 		}
+		fmt.Printf("[PIAB] proxyrack [✅] crawler find %d proxies\n", len(resp.Records))
 		for _, p := range resp.Records {
 			validateJobs <- proxyinabox.Proxy{
 				IP:       p.IP,
@@ -53,7 +54,6 @@ func (k *proxyRack) Fetch() {
 				Protocol: p.Protocol,
 			}
 		}
-		fmt.Printf("[PIAB] proxyrack [✅] crawler find %d proxies\n", len(resp.Records))
 		if len(resp.Records) == 0 || currentPage*500 >= resp.TotalRecordCount {
 			currentPage = 1
 		} else {
