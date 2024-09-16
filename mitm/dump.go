@@ -2,6 +2,7 @@ package mitm
 
 import (
 	"compress/gzip"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,7 +79,9 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 }
 
 func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, err error) {
-	transport := http.Transport{}
+	transport := http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 	if !m.IsDirect {
 		var proxy string
 		proxy, err = m.Scheduler(clientRequest)
