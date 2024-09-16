@@ -17,8 +17,8 @@ func newSpysMe() *spysme {
 
 func (k *spysme) Fetch() {
 	var urlSources = []string{
-		"http://spys.me/proxy.txt",
-		"http://spys.me/socks.txt",
+		"https://spys.me/proxy.txt",
+		"https://spys.me/socks.txt",
 	}
 	var protocols = []string{
 		"http",
