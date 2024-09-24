@@ -6,6 +6,7 @@ import (
 
 type Cache interface {
 	RandomProxy() (string, bool)
+	GetProxy() (string, bool)
 	ProxyLength() int
 	PickProxy(req *http.Request) (string, error)
 	IPLimiter(req *http.Request) bool

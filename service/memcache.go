@@ -39,9 +39,10 @@ func (p sortableProxyList) Less(i, j int) bool {
 }
 
 type proxyList struct {
-	l     sync.Mutex
-	pl    []*proxyEntry
-	index map[string]struct{}
+	l             sync.Mutex
+	pl            []*proxyEntry
+	getProxyIndex int // 直接获取代理的索引
+	index         map[string]struct{}
 }
 
 /*
@@ -199,6 +200,20 @@ func (c *MemCache) RandomProxy() (string, bool) {
 		return "", false
 	}
 	return c.proxies.pl[rand.Intn(len(c.proxies.pl))].p.URI(), true
+}
+
+func (c *MemCache) GetProxy() (string, bool) {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+	if len(c.proxies.pl) == 0 {
+		return "", false
+	}
+	if c.proxies.getProxyIndex >= len(c.proxies.pl) {
+		c.proxies.getProxyIndex = 0
+	}
+	p := c.proxies.pl[c.proxies.getProxyIndex].p.URI()
+	c.proxies.getProxyIndex++
+	return p, true
 }
 
 func (c *MemCache) ProxyLength() int {

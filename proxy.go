@@ -17,6 +17,7 @@ const (
 	PlatformTheSpeedX
 	PlatformProxyRack
 	PlatformIPRoyal
+	PlatformMonosansProxyList
 )
 
 // Proxy proxy model

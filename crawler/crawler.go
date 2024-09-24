@@ -56,6 +56,7 @@ func FetchProxies() {
 		newSpysMe(),
 		newProxyRack(),
 		newIPRoyal(),
+		newMonosansProxyList(),
 	}
 	for _, c := range cs {
 		go c.Fetch()

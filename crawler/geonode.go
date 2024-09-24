@@ -50,7 +50,7 @@ func (k *geonode) Fetch() {
 				Protocol: p.Protocols[0],
 			}
 		}
-		if currentPage*resp.Limit >= resp.Total {
+		if currentPage*resp.Limit >= resp.Total || len(resp.Data) == 0 {
 			currentPage = 1
 		} else {
 			currentPage++

@@ -78,7 +78,7 @@ func (k *kuaiDaiLi) Fetch() {
 
 					count += len(proxyList)
 
-					ended = count >= totalCount
+					ended = count >= totalCount || len(proxyList) == 0
 					currPageNo++
 				}
 			}

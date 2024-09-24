@@ -47,6 +47,15 @@ var rootCmd = &cobra.Command{
 			pl := proxyinabox.CI.ProxyLength()
 			w.Write([]byte(fmt.Sprintf("ProxyInABox\n\nHTTP: %s\nHTTPS: %s\n\nAvailable: %d\n", httpProxyAddr, httpsProxyAddr, pl)))
 		})
+		managerHttpServer.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) {
+			proxy, ok := proxyinabox.CI.GetProxy()
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte("No proxy available"))
+			} else {
+				w.Write([]byte(proxy))
+			}
+		})
 		if err := http.ListenAndServe(manageAddr, managerHttpServer); err != nil {
 			fmt.Println("[PIAB]", "panic", "[👻]", err)
 			os.Exit(1)
