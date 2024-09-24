@@ -38,7 +38,7 @@ func (k *geonode) Fetch() {
 		}
 		var resp geonodeResp
 		if err = json.Unmarshal([]byte(body), &resp); err != nil {
-			fmt.Printf("[PIAB] geonode [❎] crawler %v\n", err)
+			fmt.Printf("[PIAB] geonode [❎] crawler body: %s, err: %v\n", body, err)
 			continue
 		}
 		fmt.Printf("[PIAB] geonode [✅] crawler find %d proxies\n", len(resp.Data))
