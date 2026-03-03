@@ -15,7 +15,8 @@ import (
 	"github.com/wabarc/proxier"
 )
 
-var validateJobs chan proxyinabox.Proxy
+// ValidateJobs is the channel for sending proxies to validation workers
+var ValidateJobs chan proxyinabox.Proxy
 var pendingValidate sync.Map
 
 type validateJSON struct {
@@ -30,37 +31,18 @@ type validateJSON struct {
 	}
 }
 
-func initC() {
-	validateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
-	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
-		go validator(i, validateJobs)
+// GetDocFromURL fetches a URL body as string, optionally through a random proxy
+// 当代理池为空或未初始化时直接请求，不通过代理
+func GetDocFromURL(url string, customHeaders ...http.Header) (string, error) {
+	var proxy string
+	if proxyinabox.CI != nil {
+		proxy, _ = proxyinabox.CI.RandomProxy()
 	}
-}
-
-func getDocFromURL(url string, customHeaders ...http.Header) (string, error) {
-	proxy, _ := proxyinabox.CI.RandomProxy()
-	body, err := getURLThroughProxyWithRetry(url, time.Second*20, proxy, 3, customHeaders...)
+	body, err := GetURLThroughProxyWithRetry(url, time.Second*20, proxy, 3, customHeaders...)
 	if err != nil {
 		return "", err
 	}
 	return string(body), nil
-}
-
-func FetchProxies() {
-	cs := []proxyinabox.ProxyCrawler{
-		newKuaiDaiLi(),
-		newProxyScrape(),
-		newGeoNode(),
-		newTheSpeedX(),
-		newAdvancedName(),
-		newSpysMe(),
-		newProxyRack(),
-		newIPRoyal(),
-		newMonosansProxyList(),
-	}
-	for _, c := range cs {
-		go c.Fetch()
-	}
 }
 
 func validator(id int, validateJobs chan proxyinabox.Proxy) {
@@ -73,7 +55,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			start := time.Now().Unix()
 
 			var resp validateJSON
-			body, err := getURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*7, proxy, 3)
+			body, err := GetURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*7, proxy, 3)
 			if err == nil {
 				err = json.Unmarshal([]byte(body), &resp)
 			}
@@ -97,7 +79,8 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 	}
 }
 
-func getURLThroughProxyWithRetry(u string, timeout time.Duration, proxy string, retry int, customHeaders ...http.Header) ([]byte, error) {
+// GetURLThroughProxyWithRetry fetches a URL through the given proxy with retry logic
+func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxy string, retry int, customHeaders ...http.Header) ([]byte, error) {
 	var opts = []proxier.UTLSOption{
 		proxier.ClientHello(&utls.HelloChrome_Auto),
 		proxier.Config(&utls.Config{

@@ -5,7 +5,6 @@ go 1.23
 toolchain go1.23.1
 
 require (
-	github.com/PuerkitoBio/goquery v1.10.0
 	github.com/getlantern/keyman v0.0.0-20230503155501-4e864ca2175b
 	github.com/glebarez/sqlite v1.11.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
@@ -14,13 +13,14 @@ require (
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0
 	github.com/wabarc/proxier v0.0.0-20230610135141-b55fe1536465
+	github.com/yuin/gopher-lua v1.1.1
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
+	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.25.12
 )
 
 require (
 	github.com/andybalholm/brotli v1.0.5 // indirect
-	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/cloudflare/circl v1.3.7 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
@@ -35,6 +35,7 @@ require (
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/google/uuid v1.4.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -64,7 +65,6 @@ require (
 	golang.org/x/text v0.18.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect

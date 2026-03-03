@@ -3,5 +3,5 @@
 *.pem
 proxy-in-a-box
 main
-pb.yaml
 proxyinabox.db
+data/

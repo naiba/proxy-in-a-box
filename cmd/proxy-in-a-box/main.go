@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	"github.com/robfig/cron"
 	"github.com/spf13/cobra"
@@ -34,13 +36,38 @@ var rootCmd = &cobra.Command{
 
 		m.ServeHTTP()
 
-		crawler.FetchProxies()
+		// 启动 pinchtab 子进程（如果配置了）
+		if proxyinabox.Config.Pinchtab.Bin != "" {
+			if err := crawler.StartPinchtab(); err != nil {
+				fmt.Println("[PIAB]", "pinchtab", "[👻]", err)
+			}
+		}
+
+		// 加载 YAML 驱动的 proxy 源并启动抓取
+		sources, err := crawler.LoadSources("./data/sources")
+		if err != nil {
+			fmt.Println("[PIAB]", "panic", "[👻]", err)
+			os.Exit(1)
+		}
+		crawler.FetchAllSources(sources)
 		crawler.Verify()
 
 		c := cron.New()
-		c.AddFunc("@daily", crawler.FetchProxies)
 		c.AddFunc("0 "+strconv.Itoa(proxyinabox.Config.Sys.VerifyDuration)+" * * * *", crawler.Verify)
 		c.Start()
+
+		// 信号处理：统一的清理路径，确保 pinchtab 和 Chrome 子进程被完整回收
+		// os.Exit 不会触发 defer，所以必须在信号处理中显式调用清理函数
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			sig := <-sigCh
+			fmt.Printf("[PIAB] received signal %v, shutting down...\n", sig)
+			c.Stop()
+			crawler.StopPinchtab()
+			os.Exit(0)
+		}()
+
 
 		managerHttpServer := http.NewServeMux()
 		managerHttpServer.HandleFunc("/stat", func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +101,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&configFilePath, "conf", "c", "./pb.yaml", "config file")
+	rootCmd.PersistentFlags().StringVarP(&configFilePath, "conf", "c", "./data/pb.yaml", "config file")
 	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "127.0.0.1:8080", "http proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "127.0.0.1:8081", "https proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "https proxy server addr")

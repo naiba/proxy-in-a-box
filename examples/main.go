@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 )
 
@@ -47,10 +46,6 @@ func testHTTPGet(msg, url string, c *http.Client) {
 	if err != nil {
 		log.Println(msg, "ERROR", err)
 		return
-	}
-	// set authorized header
-	if strings.HasPrefix(url, "http://") {
-		req.Header.Set("Naiba", "lifelonglearning")
 	}
 	resp, err := c.Do(req)
 	if err != nil {

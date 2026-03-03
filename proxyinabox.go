@@ -27,6 +27,12 @@ type Conf struct {
 		RequestLimitPerIP int64 `mapstructure:"request_limit_per_ip"`
 		VerifyDuration    int   `mapstructure:"verify_duration"`
 	}
+	Pinchtab struct {
+		// pinchtab 二进制路径，留空则禁用浏览器抓取
+		Bin  string
+		// pinchtab 监听端口，默认 9867
+		Port string
+	}
 }
 
 // Config system config

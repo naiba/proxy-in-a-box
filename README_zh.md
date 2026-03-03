@@ -3,32 +3,32 @@
 [![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
-Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources, validates them, and provides HTTP/HTTPS proxy servers with automatic rotation, rate limiting, and TLS fingerprint spoofing.
+自动化代理池，专为网页爬虫设计。通过 YAML 配置定义代理源，自动抓取和验证代理，提供 HTTP/HTTPS 代理服务，支持自动轮换、速率限制和 TLS 指纹伪装。
 
-[中文说明](README_zh.md)
+[English](README.md)
 
-## Features
+## 功能特性
 
-- **YAML-driven sources** — All proxy sources defined as YAML configs with Lua scripting for complex logic
-- **Headless browser scraping** — Integrated [pinchtab](https://github.com/pinchtab/pinchtab) for JS-rendered pages (e.g. IPRoyal)
-- **Auto-validation** — Concurrent proxy verification with configurable worker pool
-- **Smart rotation** — Automatic proxy assignment based on domain and IP limits
-- **Rate limiting** — Configurable requests per IP and domains per IP
-- **TLS fingerprint spoofing** — Uses uTLS to mimic Chrome browser fingerprints
-- **MITM support** — Built-in man-in-the-middle proxy for HTTPS traffic
-- **SQLite storage** — Lightweight embedded database, no external dependencies
+- **YAML 驱动的数据源** — 所有代理源通过 YAML 配置定义，支持 Lua 脚本处理复杂逻辑
+- **无头浏览器抓取** — 集成 [pinchtab](https://github.com/pinchtab/pinchtab)，处理 JS 渲染的页面（如 IPRoyal）
+- **自动验证** — 并发代理验证，可配置工作线程数
+- **智能轮换** — 基于域名和 IP 限制自动分配代理
+- **速率限制** — 可配置每 IP 请求数和每 IP 域名数
+- **TLS 指纹伪装** — 使用 uTLS 模拟 Chrome 浏览器指纹
+- **MITM 支持** — 内置中间人代理处理 HTTPS 流量
+- **SQLite 存储** — 轻量级嵌入式数据库，无外部依赖
 
-## Quick Start
+## 快速开始
 
-### Docker (Recommended)
+### Docker（推荐）
 
 ```bash
 mkdir -p data/sources
 
-# Download default config and sources
-# pb.yaml — main config
-# data/sources/*.yaml — proxy source definitions
-# See "Configuration" and "Proxy Sources" sections below
+# 下载默认配置和源定义
+# pb.yaml — 主配置
+# data/sources/*.yaml — 代理源定义
+# 参见下方「配置说明」和「代理来源」章节
 
 docker run -d --name proxy-in-a-box \
   -v ./data:/app/data \
@@ -36,69 +36,69 @@ docker run -d --name proxy-in-a-box \
   ghcr.io/naiba/proxy-in-a-box
 ```
 
-### From Source
+### 从源码安装
 
 ```bash
 go install github.com/naiba/proxyinabox/cmd/proxy-in-a-box@latest
 mkdir -p data/sources
-# Create data/pb.yaml and data/sources/*.yaml (see below)
+# 创建 data/pb.yaml 和 data/sources/*.yaml（参见下方说明）
 proxy-in-a-box
 ```
 
-## Usage
+## 使用方法
 
 ```
-Usage:
+用法:
   proxy-in-a-box [flags]
 
-Flags:
-  -c, --conf string   config file (default "./data/pb.yaml")
-  -p, --ha string     http proxy server addr (default "127.0.0.1:8080")
-  -s, --sa string     https proxy server addr (default "127.0.0.1:8081")
-  -m, --ma string     management api addr (default "0.0.0.0:8083")
-  -h, --help          help for proxy-in-a-box
+参数:
+  -c, --conf string   配置文件路径 (默认 "./data/pb.yaml")
+  -p, --ha string     HTTP 代理服务地址 (默认 "127.0.0.1:8080")
+  -s, --sa string     HTTPS 代理服务地址 (默认 "127.0.0.1:8081")
+  -m, --ma string     管理 API 地址 (默认 "0.0.0.0:8083")
+  -h, --help          帮助信息
 ```
 
-Configure your application to use the proxy:
+在你的应用中配置代理：
 
 ```
-HTTP Proxy:  http://127.0.0.1:8080
-HTTPS Proxy: https://127.0.0.1:8081
+HTTP 代理:  http://127.0.0.1:8080
+HTTPS 代理: https://127.0.0.1:8081
 ```
 
-Management API:
+管理 API：
 
 ```
-GET /stat  — Pool statistics
-GET /get   — Get one available proxy
+GET /stat  — 代理池统计
+GET /get   — 获取一个可用代理
 ```
 
-## Configuration
+## 配置说明
 
-`data/pb.yaml`:
+`data/pb.yaml`：
 
 ```yaml
 debug: true
 
 sys:
   name: MyProxy
-  proxy_verify_worker: 20    # concurrent verification workers
-  domains_per_ip: 30         # max domains per IP in 30 minutes
-  request_limit_per_ip: 10   # max requests per IP per second
-  verify_duration: 30        # re-verify interval in minutes
+  proxy_verify_worker: 20    # 并发验证工作线程数
+  domains_per_ip: 30         # 30 分钟内每个 IP 可访问的最大域名数
+  request_limit_per_ip: 10   # 每秒每个 IP 的最大请求数
+  verify_duration: 30        # 代理重新验证间隔（分钟）
 
-# Headless browser for JS-rendered pages (optional)
-# Requires pinchtab binary — included in Docker image
+# 无头浏览器配置（可选）
+# 需要 pinchtab 二进制 — Docker 镜像已内置
 pinchtab:
-  bin: pinchtab              # binary path (leave empty to disable)
-  port: "9867"               # listen port
+  bin: pinchtab              # 二进制路径（留空则禁用）
+  port: "9867"               # 监听端口
 ```
 
-## Proxy Sources
+## 代理来源
 
-Sources are YAML files in `data/sources/`. Three types supported:
+代理源是 `data/sources/` 目录下的 YAML 文件，支持三种类型：
 
-### `text` — Plain text IP:Port lists
+### `text` — 纯文本 IP:Port 列表
 
 ```yaml
 name: thespeedx-http
@@ -108,7 +108,7 @@ protocol: http
 interval: 5m
 ```
 
-### `json` — JSON API with field paths
+### `json` — JSON API + 字段路径提取
 
 ```yaml
 name: proxyscrape
@@ -120,9 +120,9 @@ protocol_field: "proxies.*.protocol"
 interval: 5m
 ```
 
-### `script` — Lua scripts for complex logic
+### `script` — Lua 脚本处理复杂逻辑
 
-Lua globals: `fetch(url, headers?)`, `sleep(ms)`, `json_decode(str)`, `json_encode(table)`, `browser_fetch(url)`, `browser_eval(expression)`
+Lua 内置函数：`fetch(url, headers?)`、`sleep(ms)`、`json_decode(str)`、`json_encode(table)`、`browser_fetch(url)`、`browser_eval(expression)`
 
 ```yaml
 name: kuaidaili
@@ -148,9 +148,9 @@ script: |
   return proxies
 ```
 
-### Browser-powered scraping (for JS-rendered pages)
+### 浏览器抓取（JS 渲染页面）
 
-Requires `pinchtab` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page.
+需要配置 `pinchtab`。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。
 
 ```yaml
 name: iproyal
@@ -184,35 +184,35 @@ script: |
   return proxies
 ```
 
-### Included Sources
+### 内置数据源
 
-| Source | Type | Method |
-|--------|------|--------|
-| TheSpeedX (http/socks4/socks5) | text | GitHub raw files |
-| ProxyScrape | json | Public API |
-| GeoNode | json | Public API |
-| KuaiDaiLi | script | Web scraping + JSON extraction |
+| 来源 | 类型 | 方式 |
+|------|------|------|
+| TheSpeedX (http/socks4/socks5) | text | GitHub 原始文件 |
+| ProxyScrape | json | 公开 API |
+| GeoNode | json | 公开 API |
+| 快代理 | script | 网页抓取 + JSON 提取 |
 | ProxyRack | script | API |
-| Monosans | text | GitHub raw file |
-| IPRoyal | script | Headless browser (pinchtab) |
+| Monosans | text | GitHub 原始文件 |
+| IPRoyal | script | 无头浏览器 (pinchtab) |
 
-## Architecture
+## 架构
 
 ```
                     ┌─────────────────────────────────────────┐
                     │           Proxy-in-a-Box                │
                     ├─────────────────────────────────────────┤
- Your App ────────► │  HTTP Proxy :8080 / HTTPS Proxy :8081  │
+ 你的应用 ────────► │  HTTP 代理 :8080 / HTTPS 代理 :8081    │
                     ├─────────────────────────────────────────┤
-                    │              Proxy Pool                 │
+                    │                代理池                   │
                     │   ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐      │
                     │   │ IP1 │ │ IP2 │ │ IP3 │ │ ... │      │
                     │   └─────┘ └─────┘ └─────┘ └─────┘      │
                     ├─────────────────────────────────────────┤
-                    │  YAML Sources   │ Validators            │
-                    │  text/json/lua  │ (concurrent workers)  │
+                    │  YAML 数据源    │ 验证器                │
+                    │  text/json/lua  │ (并发工作线程)        │
                     ├─────────────────────────────────────────┤
-                    │  pinchtab ←──── Chrome (headless)       │
+                    │  pinchtab ←──── Chrome (无头模式)       │
                     └─────────────────────────────────────────┘
                                      │
                                      ▼
@@ -221,21 +221,21 @@ script: |
                               └─────────────┘
 ```
 
-## Benchmark
+## 性能测试
 
 ```bash
 ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
 ```
 
-## Tech Stack
+## 技术栈
 
-- **Language**: Go 1.23
-- **Database**: SQLite (via `glebarez/sqlite` + GORM)
-- **Scripting**: gopher-lua (Lua 5.1 VM)
-- **Browser**: [pinchtab](https://github.com/pinchtab/pinchtab) + Chromium
-- **TLS**: uTLS for fingerprint spoofing
-- **HTTP**: Standard library + custom MITM proxy
+- **语言**：Go 1.23
+- **数据库**：SQLite（`glebarez/sqlite` + GORM）
+- **脚本引擎**：gopher-lua（Lua 5.1 VM）
+- **浏览器**：[pinchtab](https://github.com/pinchtab/pinchtab) + Chromium
+- **TLS**：uTLS 指纹伪装
+- **HTTP**：标准库 + 自定义 MITM 代理
 
-## License
+## 许可证
 
 MIT

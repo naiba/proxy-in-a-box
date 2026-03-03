@@ -10,12 +10,15 @@ import (
 var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
 
+// Init initializes both the validation workers and verify workers
 func Init() {
-	initV()
-	initC()
-}
+	// 初始化 proxy 验证 workers
+	ValidateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
+	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
+		go validator(i, ValidateJobs)
+	}
 
-func initV() {
+	// 初始化 verify workers
 	proxyServiceInstance = &service.ProxyService{DB: proxyinabox.DB}
 	verifyJob = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker)
 	for i := 0; i < proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
@@ -35,7 +38,7 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		proxy := p.URI()
 		start := time.Now().Unix()
 		var resp validateJSON
-		_, err := getURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*5, proxy, 3)
+		_, err := GetURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*5, proxy, 3)
 		delay := time.Now().Unix() - start
 		if err != nil || resp.IP != p.IP {
 			proxyinabox.CI.DeleteProxy(p)
