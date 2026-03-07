@@ -18,7 +18,7 @@ RUN apk add --no-cache \
     ca-certificates \
     ttf-freefont \
     curl \
-    dumb-init
+    tini
 
 # 安装 pinchtab 二进制
 ARG TARGETARCH
@@ -35,5 +35,5 @@ ENV CHROME_BIN=/usr/bin/chromium-browser
 
 EXPOSE 8080 8081 8083
 
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["proxy-in-a-box", "-c", "/app/data/pb.yaml"]
