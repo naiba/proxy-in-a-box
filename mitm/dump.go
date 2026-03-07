@@ -82,24 +82,19 @@ func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, 
 	transport := http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	if !m.IsDirect {
-		var proxy string
-		proxy, err = m.Scheduler(clientRequest)
-		if err != nil {
-			fmt.Println("[MITM]", "proxy scheduler", "[❎]", err)
-			return
-		}
-		var p *url.URL
-		p, err = url.Parse(proxy)
-		if err != nil {
-			fmt.Println("[MITM]", "proxy parse", "[❎]", err)
-			return
-		}
-		transport.Proxy = http.ProxyURL(p)
-	} else {
-		clientRequest.Header.Del("Proxy-Connection")
-		clientRequest.Header.Set("Connection", "Keep-Alive")
+	var proxy string
+	proxy, err = m.Scheduler(clientRequest)
+	if err != nil {
+		fmt.Println("[MITM]", "proxy scheduler", "[❎]", err)
+		return
 	}
+	var p *url.URL
+	p, err = url.Parse(proxy)
+	if err != nil {
+		fmt.Println("[MITM]", "proxy parse", "[❎]", err)
+		return
+	}
+	transport.Proxy = http.ProxyURL(p)
 
 	clientRequest.RequestURI = ""
 	cli := http.Client{

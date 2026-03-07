@@ -1,6 +1,8 @@
 package proxyinabox
 
 import (
+	"path/filepath"
+
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
@@ -29,24 +31,29 @@ type Conf struct {
 	}
 	Pinchtab struct {
 		// pinchtab 二进制路径，留空则禁用浏览器抓取
-		Bin  string
+		Bin string
 		// pinchtab 监听端口，默认 9867
 		Port string
 	}
+	// EnableMITM 是否启用 HTTPS 中间人解密，默认 false（关闭时走 TCP 隧道透传，客户端无需关闭 TLS 验证）
+	EnableMITM bool `mapstructure:"enable_mitm"`
 }
 
 // Config system config
 var Config Conf
 
+var DataDir string
+
 // Init init system
-func Init() {
+func Init(configFilePath string) {
+	DataDir = filepath.Dir(configFilePath)
 	validateConf()
 	initDB()
 }
 
 func initDB() {
 	var err error
-	DB, err = gorm.Open(sqlite.Open("proxyinabox.db"))
+	DB, err = gorm.Open(sqlite.Open(filepath.Join(DataDir, "proxyinabox.db")))
 	if err != nil {
 		panic(err)
 	}

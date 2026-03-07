@@ -87,6 +87,11 @@ sys:
   request_limit_per_ip: 10   # 每秒每个 IP 的最大请求数
   verify_duration: 30        # 代理重新验证间隔（分钟）
 
+# HTTPS 中间人解密（默认关闭）
+# 开启后代理会用自签 CA 解密 HTTPS 流量，客户端需关闭 TLS 验证或信任该 CA
+# 关闭时（默认），HTTPS CONNECT 请求直接隧道透传，客户端使用标准 TLS 验证
+enable_mitm: false
+
 # 无头浏览器配置（可选）
 # 需要 pinchtab 二进制 — Docker 镜像已内置
 pinchtab:

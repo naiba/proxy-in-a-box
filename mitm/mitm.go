@@ -4,7 +4,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,12 +31,12 @@ type TLSConfig struct {
 // MITM 中间人
 type MITM struct {
 	ListenHTTPS bool   //开启 HTTPS 代理服务器
+	EnableMITM  bool   //启用 HTTPS 中间人解密，关闭时 CONNECT 走 TCP 隧道透传
 	HTTPAddr    string //HTTP listen addr
 	HTTPSAddr   string //HTTPS listen addr
 	TLSConf     *TLSConfig
 	Print       bool //打印请求详情
 
-	IsDirect  bool                                              //是否直连，不通过代理
 	Scheduler func(req *http.Request) (proxy string, err error) //代理调度 func
 	Filter    func(req *http.Request) error                     //请求鉴权、清洗、限流
 
@@ -47,6 +49,11 @@ type MITM struct {
 // Init mitm
 func (m *MITM) Init() {
 	m.cache = cache.New(time.Hour, time.Minute)
+
+	if !m.EnableMITM {
+		return
+	}
+
 	m.GenerateCA()
 
 	if m.TLSConf.CommonName == "" {
@@ -127,7 +134,11 @@ func (m *MITM) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodConnect {
-		m.injectHTTPS(w, r)
+		if m.EnableMITM {
+			m.injectHTTPS(w, r)
+		} else {
+			m.tunnelHTTPS(w, r)
+		}
 	} else {
 		m.Dump(w, r)
 	}
@@ -169,6 +180,66 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 	}()
 
 	connIn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+}
+
+// tunnelHTTPS 不解密 HTTPS 流量，直接建立 TCP 隧道透传，客户端与目标服务器直接完成 TLS 握手
+func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
+	targetAddr := r.Host
+	if !strings.Contains(targetAddr, ":") {
+		targetAddr += ":443"
+	}
+
+	var remoteConn net.Conn
+	var err error
+
+	proxy, schedErr := m.Scheduler(r)
+	if schedErr != nil {
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy scheduler error: %s", schedErr))
+		return
+	}
+	proxyURL, parseErr := url.Parse(proxy)
+	if parseErr != nil {
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy parse error: %s", parseErr))
+		return
+	}
+	remoteConn, err = net.DialTimeout("tcp", proxyURL.Host, 15*time.Second)
+	if err != nil {
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial upstream proxy error: %s", err))
+		return
+	}
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+	remoteConn.Write([]byte(connectReq))
+	buf := make([]byte, 4096)
+	n, readErr := remoteConn.Read(buf)
+	if readErr != nil {
+		remoteConn.Close()
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS upstream proxy response error: %s", readErr))
+		return
+	}
+	resp := string(buf[:n])
+	if !strings.Contains(resp, "200") {
+		remoteConn.Close()
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS upstream proxy rejected CONNECT: %s", resp))
+		return
+	}
+
+	clientConn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		remoteConn.Close()
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS hijack error: %s", err))
+		return
+	}
+
+	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+	go func() {
+		io.Copy(remoteConn, clientConn)
+		remoteConn.Close()
+	}()
+	go func() {
+		io.Copy(clientConn, remoteConn)
+		clientConn.Close()
+	}()
 }
 
 func copyTLSConfig(c *tls.Config) *tls.Config {

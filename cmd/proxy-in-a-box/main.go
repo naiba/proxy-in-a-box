@@ -27,7 +27,7 @@ var rootCmd = &cobra.Command{
 	Short: "Proxy-in-a-Box provide many proxies.",
 	Long:  `Proxy-in-a-Box helps programmers quickly and easily develop powerful crawler services. one-script, easy-to-use: proxies in a box.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		proxyinabox.Init()
+		proxyinabox.Init(configFilePath)
 		fmt.Println("[PIAB]", "main", "[😁]", proxyinabox.Config.Sys.Name, "v1.0.0")
 		proxyinabox.CI = service.NewMemCache()
 
@@ -69,7 +69,6 @@ var rootCmd = &cobra.Command{
 			crawler.StopPinchtab()
 			os.Exit(0)
 		}()
-
 
 		managerHttpServer := http.NewServeMux()
 		managerHttpServer.HandleFunc("/stat", func(w http.ResponseWriter, r *http.Request) {
@@ -184,17 +183,12 @@ func main() {
 }
 
 func newMITM() *mitm.MITM {
-	return &mitm.MITM{
-		ListenHTTPS: true,
+	m := &mitm.MITM{
+		ListenHTTPS: proxyinabox.Config.EnableMITM,
+		EnableMITM:  proxyinabox.Config.EnableMITM,
 		HTTPAddr:    httpProxyAddr,
 		HTTPSAddr:   httpsProxyAddr,
-		TLSConf: &mitm.TLSConfig{
-			PrivateKeyFile: "proxyinabox.key",
-			CertFile:       "proxyinabox.pem",
-		},
-		// Print:     proxyinabox.Config.Debug,
-		IsDirect:  false,
-		Scheduler: proxyinabox.CI.PickProxy,
+		Scheduler:   proxyinabox.CI.PickProxy,
 		Filter: func(req *http.Request) error {
 			if !proxyinabox.CI.IPLimiter(req) {
 				return fmt.Errorf("%s", "请求次数过快")
@@ -205,4 +199,11 @@ func newMITM() *mitm.MITM {
 			return nil
 		},
 	}
+	if proxyinabox.Config.EnableMITM {
+		m.TLSConf = &mitm.TLSConfig{
+			PrivateKeyFile: "proxyinabox.key",
+			CertFile:       "proxyinabox.pem",
+		}
+	}
+	return m
 }

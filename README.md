@@ -87,6 +87,11 @@ sys:
   request_limit_per_ip: 10   # max requests per IP per second
   verify_duration: 30        # re-verify interval in minutes
 
+# HTTPS MITM decryption (default: false)
+# When enabled, the proxy decrypts HTTPS traffic using a self-signed CA — clients must disable TLS verification or trust the CA.
+# When disabled (default), HTTPS CONNECT requests are tunneled as-is — clients use standard TLS verification.
+enable_mitm: false
+
 # Headless browser for JS-rendered pages (optional)
 # Requires pinchtab binary — included in Docker image
 pinchtab:
