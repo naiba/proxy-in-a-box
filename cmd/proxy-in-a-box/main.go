@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/robfig/cron"
@@ -82,6 +84,73 @@ var rootCmd = &cobra.Command{
 			} else {
 				w.Write([]byte(proxy))
 			}
+		})
+
+		// Dashboard HTML 页面
+		managerHttpServer.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// 仅响应根路径，避免拦截其他未注册路径
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(dashboardHTML))
+		})
+
+		// API: 代理池统计摘要
+		managerHttpServer.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+			proxies := proxyinabox.CI.GetAllProxies()
+			byProtocol := make(map[string]int)
+			bySource := make(map[string]int)
+			for _, p := range proxies {
+				proto := strings.ToLower(p.Protocol)
+				if proto == "" {
+					proto = "http"
+				}
+				byProtocol[proto]++
+				bySource[p.Source]++
+			}
+			stats := map[string]interface{}{
+				"total":       len(proxies),
+				"by_protocol": byProtocol,
+				"by_source":   bySource,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(stats)
+		})
+
+		// API: 全量代理列表
+		managerHttpServer.HandleFunc("/api/proxies", func(w http.ResponseWriter, r *http.Request) {
+			proxies := proxyinabox.CI.GetAllProxies()
+			type proxyJSON struct {
+				IP         string `json:"ip"`
+				Port       string `json:"port"`
+				Protocol   string `json:"protocol"`
+				Country    string `json:"country"`
+				Source     string `json:"source"`
+				Delay      int64  `json:"delay"`
+				LastVerify string `json:"last_verify"`
+			}
+			result := make([]proxyJSON, len(proxies))
+			for i, p := range proxies {
+				result[i] = proxyJSON{
+					IP:         p.IP,
+					Port:       p.Port,
+					Protocol:   p.Protocol,
+					Country:    p.Country,
+					Source:     p.Source,
+					Delay:      p.Delay,
+					LastVerify: p.LastVerify.Format("2006-01-02T15:04:05Z"),
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(result)
+		})
+
+		// API: 各源抓取状态
+		managerHttpServer.HandleFunc("/api/sources", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(crawler.GetSourceStatuses())
 		})
 		if err := http.ListenAndServe(manageAddr, managerHttpServer); err != nil {
 			fmt.Println("[PIAB]", "panic", "[👻]", err)

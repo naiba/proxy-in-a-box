@@ -22,18 +22,18 @@
 
 ### Docker（推荐）
 
-```bash
-mkdir -p data/sources
-
-# 下载默认配置和源定义
-# pb.yaml — 主配置
-# data/sources/*.yaml — 代理源定义
-# 参见下方「配置说明」和「代理来源」章节
-
-docker run -d --name proxy-in-a-box \
-  -v ./data:/app/data \
-  -p 8080:8080 -p 8081:8081 -p 8083:8083 \
-  ghcr.io/naiba/proxy-in-a-box
+```yaml
+# docker-compose.yml
+services:
+  proxy-in-a-box:
+    image: ghcr.io/naiba/proxy-in-a-box
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"   # HTTP 代理
+      - "8081:8081"   # HTTPS 代理
+      - "8083:8083"   # Dashboard + API
 ```
 
 ### 从源码安装

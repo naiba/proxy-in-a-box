@@ -22,18 +22,18 @@ Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources,
 
 ### Docker (Recommended)
 
-```bash
-mkdir -p data/sources
-
-# Download default config and sources
-# pb.yaml — main config
-# data/sources/*.yaml — proxy source definitions
-# See "Configuration" and "Proxy Sources" sections below
-
-docker run -d --name proxy-in-a-box \
-  -v ./data:/app/data \
-  -p 8080:8080 -p 8081:8081 -p 8083:8083 \
-  ghcr.io/naiba/proxy-in-a-box
+```yaml
+# docker-compose.yml
+services:
+  proxy-in-a-box:
+    image: ghcr.io/naiba/proxy-in-a-box
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"   # HTTP proxy
+      - "8081:8081"   # HTTPS proxy
+      - "8083:8083"   # Dashboard + API
 ```
 
 ### From Source

@@ -365,6 +365,17 @@ func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 	proxyinabox.DB.Unscoped().Delete(&p)
 }
 
+// GetAllProxies 返回代理池中所有代理的快照副本（用于 dashboard 展示）
+func (c *MemCache) GetAllProxies() []proxyinabox.Proxy {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+	result := make([]proxyinabox.Proxy, len(c.proxies.pl))
+	for i, e := range c.proxies.pl {
+		result[i] = *e.p
+	}
+	return result
+}
+
 func getIP(str string) string {
 	return strings.Split(str, ":")[0]
 }

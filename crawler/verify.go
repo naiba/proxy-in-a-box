@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -38,12 +39,16 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		proxy := p.URI()
 		start := time.Now().Unix()
 		var resp validateJSON
-		_, err := GetURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*5, proxy, 3)
+		// BUG-FIX: 必须解析响应体到 resp，否则 resp.IP 永远为空，IP 不匹配检查不生效
+		body, err := GetURLThroughProxyWithRetry("https://api.myip.la/cn?json", time.Second*5, proxy, 3)
+		if err == nil {
+			err = json.Unmarshal(body, &resp)
+		}
 		delay := time.Now().Unix() - start
 		if err != nil || resp.IP != p.IP {
 			proxyinabox.CI.DeleteProxy(p)
 			continue
 		}
-		proxyinabox.DB.Model(&p).Update("delay", delay)
+		proxyinabox.DB.Model(&p).Updates(map[string]interface{}{"delay": delay, "last_verify": time.Now()})
 	}
 }

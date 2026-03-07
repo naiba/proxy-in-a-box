@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -26,6 +27,32 @@ type Source struct {
 	PortField     string            `yaml:"port_field"`
 	ProtocolField string            `yaml:"protocol_field"`
 	Script        string            `yaml:"script"`
+}
+
+// SourceStatus 记录每个 proxy 源的最近抓取状态，用于 dashboard 展示
+type SourceStatus struct {
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	LastFetch  time.Time `json:"last_fetch"`
+	ProxyCount int       `json:"proxy_count"`
+	Error      string    `json:"error"`
+	Interval   string    `json:"interval"`
+}
+
+var (
+	sourceStatuses   []SourceStatus
+	sourceStatusesMu sync.RWMutex
+)
+
+// GetSourceStatuses 返回所有源状态的快照副本（线程安全）
+func GetSourceStatuses() []SourceStatus {
+	sourceStatusesMu.RLock()
+	defer sourceStatusesMu.RUnlock()
+	copy := make([]SourceStatus, len(sourceStatuses))
+	for i, s := range sourceStatuses {
+		copy[i] = s
+	}
+	return copy
 }
 
 func (s Source) intervalDuration() time.Duration {
@@ -79,8 +106,20 @@ func LoadSources(dir string) ([]Source, error) {
 
 // FetchAllSources starts a goroutine per source to continuously fetch proxies
 func FetchAllSources(sources []Source) {
-	for _, src := range sources {
-		go fetchSource(src)
+	// 初始化源状态注册表
+	sourceStatusesMu.Lock()
+	sourceStatuses = make([]SourceStatus, len(sources))
+	for i, src := range sources {
+		sourceStatuses[i] = SourceStatus{
+			Name:     src.Name,
+			Type:     src.Type,
+			Interval: src.Interval,
+		}
+	}
+	sourceStatusesMu.Unlock()
+
+	for i, src := range sources {
+		go fetchSource(src, i)
 	}
 }
 
@@ -98,7 +137,23 @@ func TestFetchSource(src Source) ([]proxyinabox.Proxy, error) {
 	}
 }
 
-func fetchSource(src Source) {
+// updateSourceStatus 更新指定索引的源状态（每次抓取完成后调用）
+func updateSourceStatus(index int, proxyCount int, fetchErr error) {
+	sourceStatusesMu.Lock()
+	defer sourceStatusesMu.Unlock()
+	if index < 0 || index >= len(sourceStatuses) {
+		return
+	}
+	sourceStatuses[index].LastFetch = time.Now()
+	sourceStatuses[index].ProxyCount = proxyCount
+	if fetchErr != nil {
+		sourceStatuses[index].Error = fetchErr.Error()
+	} else {
+		sourceStatuses[index].Error = ""
+	}
+}
+
+func fetchSource(src Source, statusIndex int) {
 	interval := src.intervalDuration()
 	for {
 		var proxies []proxyinabox.Proxy
@@ -113,13 +168,16 @@ func fetchSource(src Source) {
 			proxies, err = runScript(src)
 		default:
 			fmt.Printf("[PIAB] %s [❎] unknown source type: %s\n", src.Name, src.Type)
+			updateSourceStatus(statusIndex, 0, fmt.Errorf("unknown source type: %s", src.Type))
 			return
 		}
 
 		if err != nil {
 			fmt.Printf("[PIAB] %s [❎] fetch error: %v\n", src.Name, err)
+			updateSourceStatus(statusIndex, 0, err)
 		} else {
 			fmt.Printf("[PIAB] %s [✅] fetched %d proxies\n", src.Name, len(proxies))
+			updateSourceStatus(statusIndex, len(proxies), nil)
 			for _, p := range proxies {
 				ValidateJobs <- p
 			}

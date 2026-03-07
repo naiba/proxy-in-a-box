@@ -1,0 +1,227 @@
+package main
+
+const dashboardHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Proxy-in-a-Box</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0b;--surface:#111113;--border:#1e1e22;--border-hi:#2a2a30;
+  --text:#c8c8cc;--text-dim:#6b6b72;--text-bright:#ebebf0;
+  --accent:#e8e8e0;--green:#3dd68c;--red:#f05858;
+  --blue:#4d9ef5;--emerald:#34d399;--orange:#f59e42;--purple:#a78bfa;
+  --mono:"JetBrains Mono","Fira Code","SF Mono","Cascadia Code","Menlo","Consolas",monospace;
+  --sans:"SF Pro Text","Helvetica Neue","Segoe UI",system-ui,sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;min-height:100vh}
+a{color:var(--blue);text-decoration:none}
+
+.shell{max-width:1400px;margin:0 auto;padding:20px 24px}
+
+/* Header */
+.header{display:flex;align-items:center;gap:16px;padding:16px 0 24px;border-bottom:1px solid var(--border)}
+.header h1{font-family:var(--mono);font-size:18px;font-weight:600;color:var(--text-bright);letter-spacing:-.5px}
+.header .badge{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border-hi);color:var(--green);padding:3px 10px;border-radius:4px}
+.header .refresh-indicator{margin-left:auto;font-size:12px;color:var(--text-dim);font-family:var(--mono)}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px 18px}
+.stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:6px}
+.stat-card .value{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--text-bright)}
+.stat-card .sub{font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-top:6px}
+.protocol-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.proto-badge{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:3px;font-weight:500}
+.proto-http{background:#4d9ef520;color:var(--blue);border:1px solid #4d9ef540}
+.proto-https{background:#34d39920;color:var(--emerald);border:1px solid #34d39940}
+.proto-socks4{background:#f59e4220;color:var(--orange);border:1px solid #f59e4240}
+.proto-socks5{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
+
+/* Section */
+.section{margin:24px 0 12px}
+.section h2{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.5px}
+
+/* Tables */
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+.proxies-scroll{max-height:520px;overflow-y:auto}
+.proxies-scroll::-webkit-scrollbar{width:6px}
+.proxies-scroll::-webkit-scrollbar-track{background:var(--surface)}
+.proxies-scroll::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+th{position:sticky;top:0;background:var(--bg);color:var(--text-dim);font-weight:500;text-transform:uppercase;font-size:10px;letter-spacing:1px;padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--text-bright)}
+th .sort-arrow{margin-left:4px;opacity:.4}
+th.sorted .sort-arrow{opacity:1;color:var(--green)}
+td{padding:8px 14px;border-bottom:1px solid var(--border);color:var(--text);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#ffffff06}
+
+/* Status dots */
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot-ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot-err{background:var(--red);box-shadow:0 0 6px var(--red)}
+.dot-pending{background:var(--text-dim)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.dot-ok{animation:pulse 2.5s ease-in-out infinite}
+
+.err-tip{position:relative;cursor:help}
+.err-tip:hover::after{content:attr(data-err);position:absolute;left:16px;top:-4px;background:#1a1a1e;border:1px solid var(--border-hi);color:var(--red);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:10;max-width:360px;overflow:hidden;text-overflow:ellipsis}
+
+/* Responsive */
+@media(max-width:768px){
+  .shell{padding:12px 14px}
+  .stats{grid-template-columns:1fr 1fr}
+  .stat-card .value{font-size:22px}
+  td,th{padding:6px 8px;font-size:11px}
+}
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="header">
+    <h1>Proxy-in-a-Box</h1>
+    <span class="badge" id="totalBadge">—</span>
+    <span class="refresh-indicator" id="refreshTimer">30s</span>
+  </div>
+
+  <div class="stats" id="statsRow">
+    <div class="stat-card"><div class="label">Total Proxies</div><div class="value" id="statTotal">—</div></div>
+    <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="protocol-badges" id="protoBadges"></div></div>
+    <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="sub" id="statSourcesSub"></div></div>
+  </div>
+
+  <div class="section"><h2>Sources</h2></div>
+  <div class="table-wrap">
+    <table><thead><tr>
+      <th>Name</th><th>Type</th><th>Interval</th><th>Last Fetch</th><th>Proxies</th><th>Status</th>
+    </tr></thead><tbody id="sourcesBody"></tbody></table>
+  </div>
+
+  <div class="section"><h2>Proxies</h2></div>
+  <div class="table-wrap"><div class="proxies-scroll">
+    <table><thead><tr>
+      <th data-col="ip">IP<span class="sort-arrow">▲</span></th>
+      <th data-col="port">Port<span class="sort-arrow">▲</span></th>
+      <th data-col="protocol">Protocol<span class="sort-arrow">▲</span></th>
+      <th data-col="country">Country<span class="sort-arrow">▲</span></th>
+      <th data-col="source">Source<span class="sort-arrow">▲</span></th>
+      <th data-col="delay">Delay<span class="sort-arrow">▲</span></th>
+      <th data-col="last_verify">Verified<span class="sort-arrow">▲</span></th>
+    </tr></thead><tbody id="proxiesBody"></tbody></table>
+  </div></div>
+</div>
+
+<script>
+(function(){
+  var sortCol='delay',sortAsc=true,proxiesData=[],countdown=30;
+
+  function relTime(ts){
+    if(!ts)return'—';
+    var d=new Date(ts),now=Date.now(),s=Math.floor((now-d.getTime())/1000);
+    if(s<0||isNaN(s))return'—';
+    if(s<60)return s+'s ago';
+    if(s<3600)return Math.floor(s/60)+'m ago';
+    if(s<86400)return Math.floor(s/3600)+'h ago';
+    return Math.floor(s/86400)+'d ago';
+  }
+
+  function protoClass(p){
+    var l=(p||'http').toLowerCase();
+    if(l==='https')return'proto-https';
+    if(l==='socks4')return'proto-socks4';
+    if(l==='socks5')return'proto-socks5';
+    return'proto-http';
+  }
+
+  function renderStats(stats){
+    var t=stats.total||0;
+    document.getElementById('statTotal').textContent=t;
+    document.getElementById('totalBadge').textContent=t+' proxies';
+    var bp=stats.by_protocol||{},keys=Object.keys(bp);
+    document.getElementById('statProtoCount').textContent=keys.length;
+    var html='';
+    keys.sort();
+    for(var i=0;i<keys.length;i++){
+      html+='<span class="proto-badge '+protoClass(keys[i])+'">'+keys[i]+': '+bp[keys[i]]+'</span>';
+    }
+    document.getElementById('protoBadges').innerHTML=html;
+    var bs=stats.by_source||{},sk=Object.keys(bs);
+    document.getElementById('statSources').textContent=sk.length;
+    document.getElementById('statSourcesSub').textContent=sk.join(', ');
+  }
+
+  function renderSources(sources){
+    var tb=document.getElementById('sourcesBody'),html='';
+    if(!sources||!sources.length){tb.innerHTML='<tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:20px">No sources loaded</td></tr>';return}
+    for(var i=0;i<sources.length;i++){
+      var s=sources[i],hasErr=s.error&&s.error.length>0,isPending=!s.last_fetch||s.last_fetch==='0001-01-01T00:00:00Z';
+      var dotCls=isPending?'dot-pending':(hasErr?'dot-err':'dot-ok');
+      var statusCell=hasErr?'<span class="err-tip" data-err="'+s.error.replace(/"/g,'&quot;')+'"><span class="dot '+dotCls+'"></span>error</span>':'<span class="dot '+dotCls+'"></span>'+(isPending?'pending':'ok');
+      html+='<tr><td>'+s.name+'</td><td>'+s.type+'</td><td>'+(s.interval||'5m')+'</td><td>'+(isPending?'—':relTime(s.last_fetch))+'</td><td>'+s.proxy_count+'</td><td>'+statusCell+'</td></tr>';
+    }
+    tb.innerHTML=html;
+  }
+
+  function sortProxies(){
+    proxiesData.sort(function(a,b){
+      var va=a[sortCol],vb=b[sortCol];
+      if(sortCol==='delay'){va=Number(va)||0;vb=Number(vb)||0}
+      else if(sortCol==='last_verify'){va=new Date(va||0).getTime();vb=new Date(vb||0).getTime()}
+      else{va=String(va||'').toLowerCase();vb=String(vb||'').toLowerCase()}
+      if(va<vb)return sortAsc?-1:1;
+      if(va>vb)return sortAsc?1:-1;
+      return 0;
+    });
+  }
+
+  function renderProxies(){
+    sortProxies();
+    var tb=document.getElementById('proxiesBody'),html='';
+    if(!proxiesData.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--text-dim);text-align:center;padding:20px">No proxies in pool</td></tr>';return}
+    for(var i=0;i<proxiesData.length;i++){
+      var p=proxiesData[i],proto=(p.protocol||'http').toLowerCase();
+      html+='<tr><td>'+p.ip+'</td><td>'+p.port+'</td><td><span class="proto-badge '+protoClass(proto)+'">'+proto+'</span></td><td>'+(p.country||'—')+'</td><td>'+p.source+'</td><td>'+(p.delay||0)+'ms</td><td>'+relTime(p.last_verify)+'</td></tr>';
+    }
+    tb.innerHTML=html;
+    // update sort headers
+    var ths=document.querySelectorAll('[data-col]');
+    for(var j=0;j<ths.length;j++){
+      ths[j].classList.toggle('sorted',ths[j].getAttribute('data-col')===sortCol);
+      ths[j].querySelector('.sort-arrow').textContent=ths[j].getAttribute('data-col')===sortCol?(sortAsc?'▲':'▼'):'▲';
+    }
+  }
+
+  // Column sort
+  document.querySelectorAll('[data-col]').forEach(function(th){
+    th.addEventListener('click',function(){
+      var col=this.getAttribute('data-col');
+      if(sortCol===col){sortAsc=!sortAsc}else{sortCol=col;sortAsc=true}
+      renderProxies();
+    });
+  });
+
+  function fetchAll(){
+    Promise.all([
+      fetch('/api/stats').then(function(r){return r.json()}),
+      fetch('/api/sources').then(function(r){return r.json()}),
+      fetch('/api/proxies').then(function(r){return r.json()})
+    ]).then(function(res){
+      renderStats(res[0]);
+      renderSources(res[1]);
+      proxiesData=res[2]||[];
+      renderProxies();
+    }).catch(function(e){console.error('fetch error',e)});
+  }
+
+  fetchAll();
+  setInterval(function(){countdown--;if(countdown<=0){countdown=30;fetchAll()}document.getElementById('refreshTimer').textContent=countdown+'s'},1000);
+})();
+</script>
+</body>
+</html>`
