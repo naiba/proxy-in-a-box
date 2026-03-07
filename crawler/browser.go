@@ -19,10 +19,8 @@ var (
 	browserClient = &http.Client{Timeout: 60 * time.Second}
 	pinchtabCmd   *exec.Cmd
 	pinchtabMu    sync.Mutex
-	// pinchtab 进程管理端口，由配置决定
-	pinchtabPort string
-	// browserOpMu 序列化所有浏览器操作，因为 pinchtab 单实例模式只有一个 Chrome 标签页
-	browserOpMu sync.Mutex
+	pinchtabPort  string
+	browserOpMu   sync.Mutex
 )
 
 // StartPinchtab 启动 pinchtab 子进程，等待其就绪
@@ -49,9 +47,14 @@ func StartPinchtab() error {
 	// 使用进程组启动，确保 SIGTERM/SIGKILL 能杀掉 pinchtab 及其 Chrome 子进程树
 	pinchtabCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	pinchtabCmd.Env = append(os.Environ(),
-		"BRIDGE_PORT="+pinchtabPort,
-		"BRIDGE_BIND=127.0.0.1",
-		"BRIDGE_HEADLESS=true",
+		"PINCHTAB_PORT="+pinchtabPort,
+		"PINCHTAB_BIND=127.0.0.1",
+		"PINCHTAB_HEADLESS=true",
+		// evaluate 端点默认禁用，必须显式启用才能执行 JS（安全策略）
+		"PINCHTAB_ALLOW_EVALUATE=true",
+		// 启用最高级别 stealth 模式，绕过反爬站点的 bot 检测（WebGL/Canvas 指纹伪装等）
+		"PINCHTAB_STEALTH=full",
+		"CHROME_FLAGS=--no-sandbox --disable-dev-shm-usage",
 	)
 	pinchtabCmd.Stdout = os.Stdout
 	pinchtabCmd.Stderr = os.Stderr
@@ -126,9 +129,7 @@ func browserAvailable() bool {
 	return proxyinabox.Config.Pinchtab.Bin != "" && pinchtabCmd != nil
 }
 
-// BrowserFetch 使用无头浏览器获取 JS 渲染后的页面 HTML
-// pinchtab 单实例模式：POST /navigate 导航 → 等待渲染 → POST /evaluate 提取 HTML
-// 操作通过 browserOpMu 序列化，因为单实例只有一个标签页
+// BrowserFetch 导航到 URL → 等待 JS 渲染 → 提取 HTML
 func BrowserFetch(targetURL string) (string, error) {
 	if !browserAvailable() {
 		return "", fmt.Errorf("pinchtab not running (configure pinchtab.bin in config)")
@@ -137,15 +138,12 @@ func BrowserFetch(targetURL string) (string, error) {
 	browserOpMu.Lock()
 	defer browserOpMu.Unlock()
 
-	// 1. 导航到目标页面
 	if err := navigate(targetURL); err != nil {
 		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
 	}
 
-	// 2. 等待 JS 渲染完成
 	time.Sleep(5 * time.Second)
 
-	// 3. 提取渲染后的 HTML
 	html, err := evaluate("document.body.innerHTML")
 	if err != nil {
 		return "", fmt.Errorf("failed to get rendered HTML: %w", err)
@@ -154,8 +152,7 @@ func BrowserFetch(targetURL string) (string, error) {
 	return html, nil
 }
 
-// BrowserEval 在当前页面执行 JavaScript 表达式并返回结果
-// 注意：必须先通过 BrowserFetch 或 navigate 导航到页面
+// BrowserEval 复用最近一次 BrowserFetch 导航的页面执行 JS 表达式
 func BrowserEval(expression string) (string, error) {
 	if !browserAvailable() {
 		return "", fmt.Errorf("pinchtab not running")
@@ -167,7 +164,6 @@ func BrowserEval(expression string) (string, error) {
 	return evaluate(expression)
 }
 
-// navigate 调用 pinchtab 单实例 API 导航到 URL
 func navigate(targetURL string) error {
 	body, _ := json.Marshal(map[string]string{"url": targetURL})
 	resp, err := browserClient.Post(pinchtabEndpoint()+"/navigate", "application/json", bytes.NewReader(body))
@@ -175,14 +171,16 @@ func navigate(targetURL string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("navigate failed (HTTP %d): %s", resp.StatusCode, string(data))
 	}
 	return nil
 }
 
-// evaluate 调用 pinchtab 单实例 API 执行 JS 表达式
 func evaluate(expression string) (string, error) {
 	body, _ := json.Marshal(map[string]string{"expression": expression})
 	resp, err := browserClient.Post(pinchtabEndpoint()+"/evaluate", "application/json", bytes.NewReader(body))
@@ -190,15 +188,18 @@ func evaluate(expression string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
 	if resp.StatusCode >= 300 {
 		return "", fmt.Errorf("evaluate failed (HTTP %d): %s", resp.StatusCode, string(data))
 	}
 	var result struct {
-		Result string `json:"result"`
+		Result interface{} `json:"result"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return "", err
+		return "", fmt.Errorf("parse evaluate response: %w", err)
 	}
-	return result.Result, nil
+	return fmt.Sprintf("%v", result.Result), nil
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,6 +23,65 @@ import (
 
 var configFilePath, httpProxyAddr, httpsProxyAddr, manageAddr string
 var m *mitm.MITM
+
+var testSourceCmd = &cobra.Command{
+	Use:   "test-source [yaml-file]",
+	Short: "Test a single proxy source YAML file",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		viper.SetConfigType("yaml")
+		viper.SetConfigFile(configFilePath)
+		if err := viper.ReadInConfig(); err != nil {
+			fmt.Println("[PIAB] config error:", err)
+			os.Exit(1)
+		}
+		if err := viper.Unmarshal(&proxyinabox.Config); err != nil {
+			fmt.Println("[PIAB] config error:", err)
+			os.Exit(1)
+		}
+
+		proxyinabox.Config.Debug = true
+		crawler.Init()
+
+		if proxyinabox.Config.Pinchtab.Bin != "" {
+			if err := crawler.StartPinchtab(); err != nil {
+				fmt.Println("[PIAB] pinchtab error:", err)
+			}
+			defer crawler.StopPinchtab()
+		}
+
+		fileSources, err := crawler.LoadSources(filepath.Dir(args[0]))
+		if err != nil {
+			fmt.Println("[PIAB] load error:", err)
+			os.Exit(1)
+		}
+
+		targetName := strings.TrimSuffix(filepath.Base(args[0]), ".yaml")
+		var target *crawler.Source
+		for i := range fileSources {
+			if fileSources[i].Name == targetName {
+				target = &fileSources[i]
+				break
+			}
+		}
+		if target == nil {
+			fmt.Printf("[PIAB] source '%s' not found in %s\n", targetName, filepath.Dir(args[0]))
+			os.Exit(1)
+		}
+
+		fmt.Printf("[PIAB] testing source: %s (type: %s)\n", target.Name, target.Type)
+		proxies, err := crawler.TestFetchSource(*target)
+		if err != nil {
+			fmt.Printf("[PIAB] ❎ fetch error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[PIAB] ✅ fetched %d proxies:\n", len(proxies))
+		for i, p := range proxies {
+			fmt.Printf("  %3d. %s %s:%s\n", i+1, p.Protocol, p.IP, p.Port)
+		}
+	},
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "proxy-in-a-box",
 	Short: "Proxy-in-a-Box provide many proxies.",
@@ -173,6 +233,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "0.0.0.0:8080", "http proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "0.0.0.0:8081", "https proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "management/dashboard addr")
+	rootCmd.AddCommand(testSourceCmd)
 }
 
 func main() {
