@@ -171,9 +171,9 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFilePath, "conf", "c", "./data/pb.yaml", "config file")
-	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "127.0.0.1:8080", "http proxy server addr")
-	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "127.0.0.1:8081", "https proxy server addr")
-	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "https proxy server addr")
+	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "0.0.0.0:8080", "http proxy server addr")
+	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "0.0.0.0:8081", "https proxy server addr")
+	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "management/dashboard addr")
 }
 
 func main() {
