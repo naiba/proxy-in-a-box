@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -15,158 +19,129 @@ import (
 	"github.com/naiba/proxyinabox"
 )
 
+// BrowserSession 管理单次浏览器抓取的完整生命周期（pinchtab 进程 + Chrome profile）
+// 每个 runScript 调用创建独立 session，用完即销毁，避免资源泄漏和 cookie/指纹污染
+type BrowserSession struct {
+	cmd     *exec.Cmd
+	port    string
+	profile string
+	client  *http.Client
+	mu      sync.Mutex
+}
+
+// 当前活跃 session（每个 runScript goroutine 通过 goroutine-local 模式使用）
 var (
-	browserClient = &http.Client{Timeout: 60 * time.Second}
-	pinchtabCmd   *exec.Cmd
-	pinchtabMu    sync.Mutex
-	pinchtabPort  string
-	browserOpMu   sync.Mutex
+	activeSession   *BrowserSession
+	activeSessionMu sync.Mutex
 )
 
-// StartPinchtab 启动 pinchtab 子进程，等待其就绪
-// 由 main.go 在启动时调用，仅当配置了 pinchtab.bin 时生效
-func StartPinchtab() error {
+func allocateRandomPort() (string, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	port := fmt.Sprintf("%d", l.Addr().(*net.TCPAddr).Port)
+	l.Close()
+	return port, nil
+}
+
+func (s *BrowserSession) endpoint() string {
+	return "http://127.0.0.1:" + s.port
+}
+
+func (s *BrowserSession) start() error {
 	cfg := proxyinabox.Config.Pinchtab
 	if cfg.Bin == "" {
-		return nil
+		return fmt.Errorf("pinchtab not configured (set pinchtab.bin in config)")
 	}
 
-	pinchtabMu.Lock()
-	defer pinchtabMu.Unlock()
-
-	if pinchtabCmd != nil {
-		return fmt.Errorf("pinchtab already running")
+	port, err := allocateRandomPort()
+	if err != nil {
+		return fmt.Errorf("allocate port: %w", err)
 	}
+	s.port = port
+	s.client = &http.Client{Timeout: 60 * time.Second}
 
-	pinchtabPort = cfg.Port
-	if pinchtabPort == "" {
-		pinchtabPort = "9867"
+	profileDir, err := os.MkdirTemp("", "piab-profile-*")
+	if err != nil {
+		return fmt.Errorf("create profile dir: %w", err)
 	}
+	s.profile = profileDir
 
-	pinchtabCmd = exec.Command(cfg.Bin)
-	// 使用进程组启动，确保 SIGTERM/SIGKILL 能杀掉 pinchtab 及其 Chrome 子进程树
-	pinchtabCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	pinchtabCmd.Env = append(os.Environ(),
-		"PINCHTAB_PORT="+pinchtabPort,
+	s.cmd = exec.Command(cfg.Bin)
+	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	s.cmd.Env = append(os.Environ(),
+		"PINCHTAB_PORT="+s.port,
 		"PINCHTAB_BIND=127.0.0.1",
 		"PINCHTAB_HEADLESS=true",
-		// evaluate 端点默认禁用，必须显式启用才能执行 JS（安全策略）
 		"PINCHTAB_ALLOW_EVALUATE=true",
-		// 启用最高级别 stealth 模式，绕过反爬站点的 bot 检测（WebGL/Canvas 指纹伪装等）
 		"PINCHTAB_STEALTH=full",
 		"CHROME_FLAGS=--no-sandbox --disable-dev-shm-usage",
 	)
-	pinchtabCmd.Stdout = os.Stdout
-	pinchtabCmd.Stderr = os.Stderr
+	s.cmd.Stdout = os.Stdout
+	s.cmd.Stderr = os.Stderr
 
-	if err := pinchtabCmd.Start(); err != nil {
-		pinchtabCmd = nil
+	if err := s.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start pinchtab: %w", err)
 	}
 
-	fmt.Printf("[PIAB] pinchtab [\U0001f680] started (pid=%d, port=%s)\n", pinchtabCmd.Process.Pid, pinchtabPort)
+	pgidFile := filepath.Join(profileDir, "pgid")
+	os.WriteFile(pgidFile, []byte(fmt.Sprintf("%d", s.cmd.Process.Pid)), 0644)
 
-	// 等待 pinchtab 就绪（最多 30 秒）
-	endpoint := pinchtabEndpoint()
+	fmt.Printf("[PIAB] pinchtab [🚀] started (pid=%d, port=%s, profile=%s)\n", s.cmd.Process.Pid, s.port, s.profile)
+
 	for i := 0; i < 30; i++ {
-		resp, err := http.Get(endpoint + "/health")
+		resp, err := http.Get(s.endpoint() + "/health")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
-				fmt.Println("[PIAB] pinchtab [\u2705] ready")
+				fmt.Println("[PIAB] pinchtab [✅] ready")
 				return nil
 			}
 		}
 		time.Sleep(time.Second)
 	}
 
-	// 超时，杀掉进程
-	StopPinchtab()
+	s.stop()
 	return fmt.Errorf("pinchtab failed to become ready within 30s")
 }
 
-// StopPinchtab 优雅停止 pinchtab 子进程及其 Chrome 子进程树
-// 流程：SIGTERM → 等待 5 秒 → SIGKILL 整个进程组（兜底，防止 Chrome 残留）
-func StopPinchtab() {
-	pinchtabMu.Lock()
-	defer pinchtabMu.Unlock()
-
-	if pinchtabCmd == nil || pinchtabCmd.Process == nil {
+func (s *BrowserSession) stop() {
+	if s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
 
-	fmt.Println("[PIAB] pinchtab [\U0001f6d1] stopping...")
+	fmt.Printf("[PIAB] pinchtab [🛑] stopping (pid=%d, profile=%s)\n", s.cmd.Process.Pid, s.profile)
 
-	// 1. 先发 SIGTERM，让 pinchtab 优雅退出并回收 Chrome
-	syscall.Kill(-pinchtabCmd.Process.Pid, syscall.SIGTERM)
+	// 通过 HTTP API 请求优雅关闭，让 pinchtab 自己回收 Chrome 子进程
+	s.client.Post(s.endpoint()+"/shutdown", "application/json", nil)
 
-	// 2. 等待进程退出，最多 5 秒
 	done := make(chan struct{})
 	go func() {
-		pinchtabCmd.Wait()
+		s.cmd.Wait()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		fmt.Println("[PIAB] pinchtab [\u2705] stopped gracefully")
-	case <-time.After(5 * time.Second):
-		// 3. 超时兜底：SIGKILL 整个进程组，确保 Chrome 不残留
-		fmt.Println("[PIAB] pinchtab [\u26a0\ufe0f] graceful stop timed out, killing process group")
-		syscall.Kill(-pinchtabCmd.Process.Pid, syscall.SIGKILL)
-		pinchtabCmd.Wait()
+		fmt.Println("[PIAB] pinchtab [✅] stopped")
+	case <-time.After(10 * time.Second):
+		fmt.Println("[PIAB] pinchtab [⚠️] kill process group")
+		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+		s.cmd.Wait()
 	}
 
-	pinchtabCmd = nil
-}
+	s.cmd = nil
 
-func pinchtabEndpoint() string {
-	return "http://127.0.0.1:" + pinchtabPort
-}
-
-// browserAvailable 检查 pinchtab 是否可用
-func browserAvailable() bool {
-	return proxyinabox.Config.Pinchtab.Bin != "" && pinchtabCmd != nil
-}
-
-// BrowserFetch 导航到 URL → 等待 JS 渲染 → 提取 HTML
-func BrowserFetch(targetURL string) (string, error) {
-	if !browserAvailable() {
-		return "", fmt.Errorf("pinchtab not running (configure pinchtab.bin in config)")
+	if s.profile != "" {
+		os.RemoveAll(s.profile)
+		s.profile = ""
 	}
-
-	browserOpMu.Lock()
-	defer browserOpMu.Unlock()
-
-	if err := navigate(targetURL); err != nil {
-		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
-	}
-
-	time.Sleep(5 * time.Second)
-
-	html, err := evaluate("document.body.innerHTML")
-	if err != nil {
-		return "", fmt.Errorf("failed to get rendered HTML: %w", err)
-	}
-
-	return html, nil
 }
 
-// BrowserEval 复用最近一次 BrowserFetch 导航的页面执行 JS 表达式
-func BrowserEval(expression string) (string, error) {
-	if !browserAvailable() {
-		return "", fmt.Errorf("pinchtab not running")
-	}
-
-	browserOpMu.Lock()
-	defer browserOpMu.Unlock()
-
-	return evaluate(expression)
-}
-
-func navigate(targetURL string) error {
+func (s *BrowserSession) navigate(targetURL string) error {
 	body, _ := json.Marshal(map[string]string{"url": targetURL})
-	resp, err := browserClient.Post(pinchtabEndpoint()+"/navigate", "application/json", bytes.NewReader(body))
+	resp, err := s.client.Post(s.endpoint()+"/navigate", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -181,9 +156,9 @@ func navigate(targetURL string) error {
 	return nil
 }
 
-func evaluate(expression string) (string, error) {
+func (s *BrowserSession) evaluate(expression string) (string, error) {
 	body, _ := json.Marshal(map[string]string{"expression": expression})
-	resp, err := browserClient.Post(pinchtabEndpoint()+"/evaluate", "application/json", bytes.NewReader(body))
+	resp, err := s.client.Post(s.endpoint()+"/evaluate", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -202,4 +177,109 @@ func evaluate(expression string) (string, error) {
 		return "", fmt.Errorf("parse evaluate response: %w", err)
 	}
 	return fmt.Sprintf("%v", result.Result), nil
+}
+
+// BrowserFetch 启动临时 pinchtab 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
+func BrowserFetch(targetURL string) (string, error) {
+	activeSessionMu.Lock()
+	if activeSession == nil {
+		activeSession = &BrowserSession{}
+		if err := activeSession.start(); err != nil {
+			activeSession = nil
+			activeSessionMu.Unlock()
+			return "", err
+		}
+	}
+	session := activeSession
+	activeSessionMu.Unlock()
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if err := session.navigate(targetURL); err != nil {
+		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
+	}
+
+	time.Sleep(5 * time.Second)
+
+	html, err := session.evaluate("document.body.innerHTML")
+	if err != nil {
+		return "", fmt.Errorf("failed to get rendered HTML: %w", err)
+	}
+
+	return html, nil
+}
+
+// BrowserEval 在当前 session 的页面上执行 JS 表达式
+func BrowserEval(expression string) (string, error) {
+	activeSessionMu.Lock()
+	session := activeSession
+	activeSessionMu.Unlock()
+
+	if session == nil {
+		return "", fmt.Errorf("no active browser session (call browser_fetch first)")
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	return session.evaluate(expression)
+}
+
+// ReleaseBrowser 停止当前 pinchtab 实例并清理 Chrome profile，释放所有资源
+func ReleaseBrowser() {
+	activeSessionMu.Lock()
+	session := activeSession
+	activeSession = nil
+	activeSessionMu.Unlock()
+
+	if session == nil {
+		return
+	}
+
+	session.mu.Lock()
+	session.navigate("about:blank")
+	session.mu.Unlock()
+
+	session.stop()
+}
+
+// StartPinchtab 兼容 test-source 子命令的预启动接口
+func StartPinchtab() error {
+	activeSessionMu.Lock()
+	defer activeSessionMu.Unlock()
+
+	if activeSession != nil {
+		return fmt.Errorf("pinchtab already running")
+	}
+	activeSession = &BrowserSession{}
+	return activeSession.start()
+}
+
+// StopPinchtab 兼容 test-source 子命令和信号处理的停止接口
+func StopPinchtab() {
+	ReleaseBrowser()
+}
+
+// CleanupStaleSessions 清理上次异常退出遗留的 pinchtab 进程组
+// 通过扫描 /tmp/piab-profile-*/pgid 找到残留的 PGID，kill 整个进程组后删除临时目录
+func CleanupStaleSessions() {
+	matches, err := filepath.Glob("/tmp/piab-profile-*/pgid")
+	if err != nil || len(matches) == 0 {
+		return
+	}
+	for _, pgidFile := range matches {
+		data, err := os.ReadFile(pgidFile)
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			continue
+		}
+		syscall.Kill(-pid, syscall.SIGKILL)
+		profileDir := filepath.Dir(pgidFile)
+		os.RemoveAll(profileDir)
+		fmt.Printf("[PIAB] pinchtab [🧹] cleaned stale session (pgid=%d, profile=%s)\n", pid, profileDir)
+	}
 }

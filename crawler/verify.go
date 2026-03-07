@@ -13,6 +13,8 @@ var proxyServiceInstance proxyinabox.ProxyService
 
 // Init initializes both the validation workers and verify workers
 func Init() {
+	CleanupStaleSessions()
+
 	// 初始化 proxy 验证 workers
 	ValidateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
 	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {

@@ -43,13 +43,6 @@ var testSourceCmd = &cobra.Command{
 		proxyinabox.Config.Debug = true
 		crawler.Init()
 
-		if proxyinabox.Config.Pinchtab.Bin != "" {
-			if err := crawler.StartPinchtab(); err != nil {
-				fmt.Println("[PIAB] pinchtab error:", err)
-			}
-			defer crawler.StopPinchtab()
-		}
-
 		fileSources, err := crawler.LoadSources(filepath.Dir(args[0]))
 		if err != nil {
 			fmt.Println("[PIAB] load error:", err)
@@ -97,13 +90,6 @@ var rootCmd = &cobra.Command{
 		m.Init()
 
 		m.ServeHTTP()
-
-		// 启动 pinchtab 子进程（如果配置了）
-		if proxyinabox.Config.Pinchtab.Bin != "" {
-			if err := crawler.StartPinchtab(); err != nil {
-				fmt.Println("[PIAB]", "pinchtab", "[👻]", err)
-			}
-		}
 
 		// 加载 YAML 驱动的 proxy 源并启动抓取
 		sources, err := crawler.LoadSources("./data/sources")

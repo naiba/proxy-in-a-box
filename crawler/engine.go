@@ -19,6 +19,7 @@ import (
 func runScript(src Source) ([]proxyinabox.Proxy, error) {
 	L := lua.NewState()
 	defer L.Close()
+	defer ReleaseBrowser()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
