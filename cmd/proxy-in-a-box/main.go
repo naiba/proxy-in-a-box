@@ -213,13 +213,16 @@ var rootCmd = &cobra.Command{
 			var blockedIPCount int64
 			proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("locked_until > ?", time.Now()).Count(&blockedIPCount)
 			stats := map[string]interface{}{
-				"version":       version,
-				"total":         len(proxies),
-				"by_protocol":   byProtocol,
-				"by_source":     bySource,
-				"blocked_ips":   blockedIPCount,
-				"processes":     mitm.GetProcessCounts(),
-				"request_stats": mitm.GlobalProtocolStats.Snapshot(),
+				"version":     version,
+				"total":       len(proxies),
+				"by_protocol": byProtocol,
+				"by_source":   bySource,
+				"blocked_ips": blockedIPCount,
+				"processes":   mitm.GetProcessCounts(),
+				"request_stats": map[string]interface{}{
+					"total":       mitm.GlobalRequestStats.Snapshot(),
+					"by_upstream": mitm.GlobalUpstreamStats.Snapshot(),
+				},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(stats)

@@ -17,32 +17,63 @@ type RequestStats struct {
 	BytesTransferred atomic.Int64
 }
 
-// ProtocolRequestStats 按上游协议（HTTP 明文 / HTTPS CONNECT 隧道）分别统计请求数和流量
-type ProtocolRequestStats struct {
-	HTTP  RequestStats
-	HTTPS RequestStats
+// UpstreamProtocolStats 按上游代理协议（http/https/socks4/socks5）分别统计请求数和流量
+type UpstreamProtocolStats struct {
+	mu    sync.RWMutex
+	stats map[string]*RequestStats
+}
+
+var GlobalUpstreamStats = &UpstreamProtocolStats{
+	stats: make(map[string]*RequestStats),
+}
+
+func (u *UpstreamProtocolStats) Get(protocol string) *RequestStats {
+	protocol = strings.ToLower(protocol)
+	u.mu.RLock()
+	s, ok := u.stats[protocol]
+	u.mu.RUnlock()
+	if ok {
+		return s
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	s, ok = u.stats[protocol]
+	if !ok {
+		s = &RequestStats{}
+		u.stats[protocol] = s
+	}
+	return s
+}
+
+func (u *UpstreamProtocolStats) Snapshot() map[string]RequestStatsSnapshot {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	result := make(map[string]RequestStatsSnapshot, len(u.stats))
+	for proto, s := range u.stats {
+		result[proto] = s.Snapshot()
+	}
+	return result
 }
 
 // trafficCountingWriter 包装 io.Writer，将写入字节数实时累加到 GlobalRequestStats.BytesTransferred。
 // 用于 io.Copy 场景（如 HTTPS 隧道透传），无需缓存整个响应即可精确计量流量。
 type trafficCountingWriter struct {
-	inner         io.Writer
-	protocolStats *RequestStats
+	inner            io.Writer
+	upstreamProtocol string
 }
 
 func (w *trafficCountingWriter) Write(p []byte) (int, error) {
 	n, err := w.inner.Write(p)
 	if n > 0 {
 		GlobalRequestStats.BytesTransferred.Add(int64(n))
-		if w.protocolStats != nil {
-			w.protocolStats.BytesTransferred.Add(int64(n))
+		if w.upstreamProtocol != "" {
+			GlobalUpstreamStats.Get(w.upstreamProtocol).BytesTransferred.Add(int64(n))
 		}
 	}
 	return n, err
 }
 
 var GlobalRequestStats = &RequestStats{}
-var GlobalProtocolStats = &ProtocolRequestStats{}
 
 type RequestStatsSnapshot struct {
 	TotalRequests    int64   `json:"total_requests"`
@@ -50,12 +81,6 @@ type RequestStatsSnapshot struct {
 	FailedRequests   int64   `json:"failed_requests"`
 	SuccessRate      float64 `json:"success_rate"`
 	BytesTransferred int64   `json:"bytes_transferred"`
-}
-
-type ProtocolStatsSnapshot struct {
-	Total RequestStatsSnapshot `json:"total"`
-	HTTP  RequestStatsSnapshot `json:"http"`
-	HTTPS RequestStatsSnapshot `json:"https"`
 }
 
 func (s *RequestStats) Snapshot() RequestStatsSnapshot {
@@ -74,14 +99,6 @@ func (s *RequestStats) Snapshot() RequestStatsSnapshot {
 		FailedRequests:   failed,
 		SuccessRate:      rate,
 		BytesTransferred: bytes,
-	}
-}
-
-func (s *ProtocolRequestStats) Snapshot() ProtocolStatsSnapshot {
-	return ProtocolStatsSnapshot{
-		Total: GlobalRequestStats.Snapshot(),
-		HTTP:  s.HTTP.Snapshot(),
-		HTTPS: s.HTTPS.Snapshot(),
 	}
 }
 

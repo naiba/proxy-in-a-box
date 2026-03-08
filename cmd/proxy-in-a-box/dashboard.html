@@ -27,7 +27,10 @@ a{color:var(--blue);text-decoration:none}
 
 /* Stats */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0}
-.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px 18px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px 18px;max-height:200px;overflow-y:auto}
+.stat-card::-webkit-scrollbar{width:5px}
+.stat-card::-webkit-scrollbar-track{background:var(--surface)}
+.stat-card::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
 .stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:6px}
 .stat-card .value{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--text-bright)}
 .stat-card .sub{font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-top:6px}
@@ -49,13 +52,9 @@ a{color:var(--blue);text-decoration:none}
 /* Tables */
 .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
 .proxies-scroll{max-height:520px;overflow-y:auto}
-.sources-scroll{max-height:360px;overflow-y:auto}
 .proxies-scroll::-webkit-scrollbar{width:6px}
 .proxies-scroll::-webkit-scrollbar-track{background:var(--surface)}
 .proxies-scroll::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
-.sources-scroll::-webkit-scrollbar{width:6px}
-.sources-scroll::-webkit-scrollbar-track{background:var(--surface)}
-.sources-scroll::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
 table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
 th{position:sticky;top:0;background:var(--bg);color:var(--text-dim);font-weight:500;text-transform:uppercase;font-size:10px;letter-spacing:1px;padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
 th:hover{color:var(--text-bright)}
@@ -108,11 +107,11 @@ tr:hover td{background:#ffffff06}
   </div>
 
   <div class="section"><h2>Sources</h2></div>
-  <div class="table-wrap"><div class="sources-scroll">
+  <div class="table-wrap">
     <table><thead><tr>
       <th>Name</th><th>Type</th><th>Interval</th><th>Last Fetch</th><th>Proxies</th><th>Available</th><th>Status</th>
     </tr></thead><tbody id="sourcesBody"></tbody></table>
-  </div></div>
+  </div>
 
   <div class="section"><h2>Proxies</h2></div>
   <div class="table-wrap"><div class="proxies-scroll">
@@ -186,21 +185,27 @@ tr:hover td{background:#ffffff06}
 
     var rs=stats.request_stats||{};
     var rsTotal=rs.total||{};
-    var rsHTTP=rs.http||{};
-    var rsHTTPS=rs.https||{};
+    var byUpstream=rs.by_upstream||{};
     document.getElementById('statRequests').textContent=rsTotal.total_requests||0;
     var rate=rsTotal.success_rate||0;
+    var reqBadges='';
+    var upKeys=Object.keys(byUpstream).sort();
+    for(var ui=0;ui<upKeys.length;ui++){
+      var uk=upKeys[ui],us=byUpstream[uk];
+      reqBadges+='<span class="proto-badge '+protoClass(uk)+'">'+uk+': '+(us.success_requests||0)+'/'+(us.failed_requests||0)+'</span>';
+    }
     document.getElementById('statRequestsSub').innerHTML=
       'success: '+(rsTotal.success_requests||0)+' / failed: '+(rsTotal.failed_requests||0)+' ('+Math.round(rate*100)+'%)'+
-      '<div class="protocol-badges" style="margin-top:6px">'+
-      '<span class="proto-badge proto-http">http: '+(rsHTTP.total_requests||0)+'</span>'+
-      '<span class="proto-badge proto-https">https: '+(rsHTTPS.total_requests||0)+'</span></div>';
+      (reqBadges?'<div class="protocol-badges" style="margin-top:6px">'+reqBadges+'</div>':'');
 
     document.getElementById('statTraffic').textContent=formatBytes(rsTotal.bytes_transferred||0);
+    var traffBadges='';
+    for(var ti=0;ti<upKeys.length;ti++){
+      var tk=upKeys[ti],ts=byUpstream[tk];
+      traffBadges+='<span class="proto-badge '+protoClass(tk)+'">'+tk+': '+formatBytes(ts.bytes_transferred||0)+'</span>';
+    }
     document.getElementById('statTrafficSub').innerHTML=
-      '<div class="protocol-badges" style="margin-top:2px">'+
-      '<span class="proto-badge proto-http">http: '+formatBytes(rsHTTP.bytes_transferred||0)+'</span>'+
-      '<span class="proto-badge proto-https">https: '+formatBytes(rsHTTPS.bytes_transferred||0)+'</span></div>';
+      traffBadges?'<div class="protocol-badges" style="margin-top:2px">'+traffBadges+'</div>':'';
     if(stats.version)document.getElementById('versionFooter').textContent='Proxy-in-a-Box '+stats.version;
   }
 
