@@ -1,17 +1,18 @@
 package mitm
 
 import (
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/getlantern/keyman"
 	"github.com/patrickmn/go-cache"
+	xproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -41,9 +42,9 @@ type MITM struct {
 	Filter    func(req *http.Request) error                     //请求鉴权、清洗、限流
 
 	cache       *cache.Cache
-	pk          *keyman.PrivateKey
+	pk          *rsa.PrivateKey
 	pkPem       []byte
-	issuingCert *keyman.Certificate
+	issuingCert *x509.Certificate
 }
 
 // Init mitm
@@ -191,41 +192,31 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 		targetAddr += ":443"
 	}
 
-	var remoteConn net.Conn
-	var err error
-
-	proxy, schedErr := m.Scheduler(r)
+	proxyURI, schedErr := m.Scheduler(r)
 	if schedErr != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy scheduler error: %s", schedErr))
 		return
 	}
-	proxyURL, parseErr := url.Parse(proxy)
+	proxyURL, parseErr := url.Parse(proxyURI)
 	if parseErr != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy parse error: %s", parseErr))
 		return
 	}
-	remoteConn, err = net.DialTimeout("tcp", proxyURL.Host, 15*time.Second)
+
+	// BUG-FIX: 使用 x/net/proxy.FromURL 统一处理代理拨号（HTTP CONNECT / SOCKS5）
+	// 之前的代码对所有代理强制发 HTTP CONNECT，导致 SOCKS 代理必然失败返回 502
+	dialer, err := xproxy.FromURL(proxyURL, xproxy.Direct)
 	if err != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial upstream proxy error: %s", err))
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS create dialer error: %s", err))
 		return
 	}
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
-	remoteConn.Write([]byte(connectReq))
-	buf := make([]byte, 4096)
-	n, readErr := remoteConn.Read(buf)
-	if readErr != nil {
-		remoteConn.Close()
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS upstream proxy response error: %s", readErr))
-		return
-	}
-	resp := string(buf[:n])
-	if !strings.Contains(resp, "200") {
-		remoteConn.Close()
+	remoteConn, err := dialer.Dial("tcp", targetAddr)
+	if err != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS upstream proxy rejected CONNECT: %s", resp))
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial through proxy error: %s", err))
 		return
 	}
 
