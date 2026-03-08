@@ -51,14 +51,25 @@ func parseCloudflareTrace(body []byte) (cloudflareTraceResult, error) {
 	return result, nil
 }
 
-// GetDocFromURL fetches a URL body as string, optionally through a random proxy
-// 当代理池为空或未初始化时直接请求，不通过代理
+// GetDocFromURL fetches a URL body as string, optionally through a random proxy.
+// 优先通过代理池中的随机 proxy 抓取，若代理抓取失败则 fallback 到直连重试，确保源站可达性最大化。
 func GetDocFromURL(url string, customHeaders ...http.Header) (string, error) {
 	var proxy string
 	if proxyinabox.CI != nil {
 		proxy, _ = proxyinabox.CI.RandomProxy()
 	}
-	body, err := GetURLThroughProxyWithRetry(url, time.Second*20, proxy, 3, customHeaders...)
+
+	if proxy != "" {
+		body, err := GetURLThroughProxyWithRetry(url, time.Second*20, proxy, 3, customHeaders...)
+		if err == nil {
+			return string(body), nil
+		}
+		if proxyinabox.Config.Debug {
+			fmt.Printf("[PIAB] fetch [⚠️] proxy fetch failed for %s, fallback to direct: %v\n", url, err)
+		}
+	}
+
+	body, err := GetURLThroughProxyWithRetry(url, time.Second*20, "", 3, customHeaders...)
 	if err != nil {
 		return "", err
 	}
