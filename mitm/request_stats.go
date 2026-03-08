@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -10,11 +11,24 @@ import (
 
 // RequestStats 代理请求的全局运行时统计（atomic，无锁）
 type RequestStats struct {
-	TotalRequests   atomic.Int64
-	SuccessRequests atomic.Int64
-	FailedRequests  atomic.Int64
-	// HTTPS 隧道模式下流量在内核态透传，无法在用户态精确计量，仅统计 HTTP 明文代理的响应体
+	TotalRequests    atomic.Int64
+	SuccessRequests  atomic.Int64
+	FailedRequests   atomic.Int64
 	BytesTransferred atomic.Int64
+}
+
+// trafficCountingWriter 包装 io.Writer，将写入字节数实时累加到 GlobalRequestStats.BytesTransferred。
+// 用于 io.Copy 场景（如 HTTPS 隧道透传），无需缓存整个响应即可精确计量流量。
+type trafficCountingWriter struct {
+	inner io.Writer
+}
+
+func (w *trafficCountingWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	if n > 0 {
+		GlobalRequestStats.BytesTransferred.Add(int64(n))
+	}
+	return n, err
 }
 
 var GlobalRequestStats = &RequestStats{}

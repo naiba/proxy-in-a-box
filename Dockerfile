@@ -5,7 +5,8 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -ldflags="-s -w" -o proxy-in-a-box ./cmd/proxy-in-a-box
+ARG VERSION=dev
+RUN go build -ldflags="-s -w -X main.version=${VERSION}" -o proxy-in-a-box ./cmd/proxy-in-a-box
 
 # Runtime
 FROM alpine:latest

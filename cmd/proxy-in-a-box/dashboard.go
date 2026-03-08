@@ -84,6 +84,7 @@ tr:hover td{background:#ffffff06}
 @media(max-width:480px){
   .stats{grid-template-columns:1fr}
 }
+.footer{margin-top:32px;padding:16px 0;border-top:1px solid var(--border);text-align:center;font-family:var(--mono);font-size:11px;color:var(--text-dim)}
 </style>
 </head>
 <body>
@@ -122,6 +123,7 @@ tr:hover td{background:#ffffff06}
       <th data-col="last_verify">Verified<span class="sort-arrow">▲</span></th>
     </tr></thead><tbody id="proxiesBody"></tbody></table>
   </div></div>
+  <div class="footer" id="versionFooter">Proxy-in-a-Box</div>
 </div>
 
 <script>
@@ -185,6 +187,7 @@ tr:hover td{background:#ffffff06}
 
     document.getElementById('statTraffic').textContent=formatBytes(rs.bytes_transferred||0);
     document.getElementById('statTrafficSub').textContent='HTTP response body only';
+    if(stats.version)document.getElementById('versionFooter').textContent='Proxy-in-a-Box '+stats.version;
   }
 
   function renderSources(sources){

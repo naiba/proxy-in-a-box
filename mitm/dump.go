@@ -72,6 +72,10 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		return
 	}
 	GlobalRequestStats.SuccessRequests.Add(1)
+	// BUG-FIX: 之前只统计了响应体字节数，漏掉了请求体，导致流量统计偏低
+	if clientRequest.ContentLength > 0 {
+		GlobalRequestStats.BytesTransferred.Add(clientRequest.ContentLength)
+	}
 	GlobalRequestStats.BytesTransferred.Add(int64(n))
 	// show http dump
 	if m.Print {

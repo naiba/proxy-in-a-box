@@ -153,6 +153,8 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 
 	cert, err := m.FakeCert(host)
 	if err != nil {
+		// BUG-FIX: 之前 injectHTTPS 的失败路径漏掉了 FailedRequests 计数，导致 Total ≠ Success + Failed
+		GlobalRequestStats.FailedRequests.Add(1)
 		msg := fmt.Sprintf("[MITM] injectHTTPS [💖] Could not get mitm cert for name: %s\nerror: %s", host, err)
 		badGateWay(resp, msg)
 		return
@@ -161,6 +163,7 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 	// handle connection
 	connIn, _, err := resp.(http.Hijacker).Hijack()
 	if err != nil {
+		GlobalRequestStats.FailedRequests.Add(1)
 		msg := fmt.Sprintf("[MITM] injectHTTPS [💖] Unable to access underlying connection from client: %s", err)
 		badGateWay(resp, msg)
 		return
@@ -231,12 +234,13 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	GlobalRequestStats.SuccessRequests.Add(1)
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
+	// BUG-FIX: 之前 io.Copy 直接搬运数据没有统计字节数，导致 HTTPS 隧道模式流量不增长
 	go func() {
-		io.Copy(remoteConn, clientConn)
+		io.Copy(&trafficCountingWriter{inner: remoteConn}, clientConn)
 		remoteConn.Close()
 	}()
 	go func() {
-		io.Copy(clientConn, remoteConn)
+		io.Copy(&trafficCountingWriter{inner: clientConn}, remoteConn)
 		clientConn.Close()
 	}()
 }

@@ -23,6 +23,7 @@ import (
 
 var configFilePath, httpProxyAddr, httpsProxyAddr, manageAddr string
 var m *mitm.MITM
+var version = "dev"
 
 var testSourceCmd = &cobra.Command{
 	Use:   "test-source [yaml-file]",
@@ -81,7 +82,7 @@ var rootCmd = &cobra.Command{
 	Long:  `Proxy-in-a-Box helps programmers quickly and easily develop powerful crawler services. one-script, easy-to-use: proxies in a box.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		proxyinabox.Init(configFilePath)
-		fmt.Println("[PIAB]", "main", "[😁]", proxyinabox.Config.Sys.Name, "v1.0.0")
+		fmt.Println("[PIAB]", "main", "[😁]", proxyinabox.Config.Sys.Name, version)
 		proxyinabox.CI = service.NewMemCache()
 
 		crawler.Init()
@@ -156,6 +157,7 @@ var rootCmd = &cobra.Command{
 				bySource[p.Source]++
 			}
 			stats := map[string]interface{}{
+				"version":       version,
 				"total":         len(proxies),
 				"by_protocol":   byProtocol,
 				"by_source":     bySource,
