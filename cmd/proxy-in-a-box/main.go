@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -100,7 +100,7 @@ var rootCmd = &cobra.Command{
 		crawler.FetchAllSources(sources)
 		crawler.Verify()
 
-		c := cron.New()
+		c := cron.New(cron.WithSeconds())
 		c.AddFunc("0 "+strconv.Itoa(proxyinabox.Config.Sys.VerifyDuration)+" * * * *", crawler.Verify)
 		c.Start()
 

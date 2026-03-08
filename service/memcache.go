@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/naiba/proxyinabox"
-	"golang.org/x/exp/rand"
+	"math/rand/v2"
 )
 
 /*
@@ -199,7 +199,7 @@ func (c *MemCache) RandomProxy() (string, bool) {
 	if len(c.proxies.pl) == 0 {
 		return "", false
 	}
-	return c.proxies.pl[rand.Intn(len(c.proxies.pl))].p.URI(), true
+	return c.proxies.pl[rand.IntN(len(c.proxies.pl))].p.URI(), true
 }
 
 func (c *MemCache) GetProxy() (string, bool) {
