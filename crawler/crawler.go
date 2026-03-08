@@ -21,6 +21,58 @@ import (
 var ValidateJobs chan proxyinabox.Proxy
 var pendingValidate sync.Map
 
+const (
+	proxyFailureLockThreshold = 3
+	proxyFailureLockDuration  = 15 * 24 * time.Hour
+)
+
+// lockedIPs 内存缓存锁定的 IP，key 为 IP 地址，value 为解锁时间
+var lockedIPs sync.Map
+
+// LoadLockedIPs 启动时从数据库加载锁定状态到内存
+func LoadLockedIPs() {
+	var blocked []proxyinabox.BlockedIP
+	proxyinabox.DB.Where("locked_until > ?", time.Now()).Find(&blocked)
+	for _, b := range blocked {
+		lockedIPs.Store(b.IP, b.LockedUntil)
+	}
+	if len(blocked) > 0 {
+		fmt.Printf("[PIAB] loaded %d locked IPs from database\n", len(blocked))
+	}
+}
+
+// IsIPLocked 检查 IP 是否在锁定期内
+func IsIPLocked(ip string) bool {
+	if v, ok := lockedIPs.Load(ip); ok {
+		if time.Now().Before(v.(time.Time)) {
+			return true
+		}
+		lockedIPs.Delete(ip)
+	}
+	return false
+}
+
+// RecordProxyFailure 按 IP 记录验证失败，达到阈值后锁定该 IP 下所有端口
+func RecordProxyFailure(ip string) {
+	var b proxyinabox.BlockedIP
+	if err := proxyinabox.DB.Where("ip = ?", ip).First(&b).Error; err != nil {
+		b = proxyinabox.BlockedIP{IP: ip}
+	}
+	b.ConsecutiveFailures++
+	if b.ConsecutiveFailures >= proxyFailureLockThreshold {
+		b.LockedUntil = time.Now().Add(proxyFailureLockDuration)
+		lockedIPs.Store(ip, b.LockedUntil)
+		fmt.Printf("[PIAB] IP [🔒] %s locked for 15 days after %d consecutive failures\n", ip, b.ConsecutiveFailures)
+	}
+	proxyinabox.DB.Save(&b)
+}
+
+// ClearProxyFailure 验证成功时清除该 IP 的失败记录
+func ClearProxyFailure(ip string) {
+	lockedIPs.Delete(ip)
+	proxyinabox.DB.Where("ip = ?", ip).Delete(&proxyinabox.BlockedIP{})
+}
+
 // cloudflareTraceResult 表示 Cloudflare cdn-cgi/trace 端点的解析结果
 type cloudflareTraceResult struct {
 	IP  string
@@ -80,6 +132,11 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 	for p := range validateJobs {
 		p.IP = strings.TrimSpace(p.IP)
 		proxy := p.URI()
+
+		if IsIPLocked(p.IP) {
+			continue
+		}
+
 		_, has := pendingValidate.Load(proxy)
 		if !has && !proxyinabox.CI.HasProxy(p.URI()) {
 			pendingValidate.Store(proxy, nil)
@@ -126,7 +183,6 @@ func ValidateProxy(p proxyinabox.Proxy) (country string, delay int64, err error)
 		return "", 0, err
 	}
 
-	// 验证代理返回的出口 IP 必须与代理声称的 IP 一致
 	if trace.IP != p.IP {
 		return "", 0, fmt.Errorf("ip mismatch: expected %s, got %s", p.IP, trace.IP)
 	}

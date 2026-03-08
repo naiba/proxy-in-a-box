@@ -60,7 +60,7 @@ func initDB() {
 	if Config.Debug {
 		DB = DB.Debug()
 	}
-	DB.AutoMigrate(&Proxy{})
+	DB.AutoMigrate(&Proxy{}, &BlockedIP{})
 }
 
 func validateConf() {

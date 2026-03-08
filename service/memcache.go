@@ -121,7 +121,9 @@ func NewMemCache() *MemCache {
 
 func (c *MemCache) load() {
 	var ps []proxyinabox.Proxy
-	err := proxyinabox.DB.Find(&ps).Error
+	err := proxyinabox.DB.Where("ip NOT IN (?)",
+		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),
+	).Find(&ps).Error
 	if err != nil {
 		panic(err)
 	}
@@ -344,6 +346,7 @@ func (c *MemCache) SaveProxy(p proxyinabox.Proxy) error {
 		p: &p,
 		n: 0,
 	})
+	c.proxies.index[p.URI()] = struct{}{}
 	return nil
 }
 
@@ -352,6 +355,12 @@ func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 	if p.ID == 0 {
 		return
 	}
+	c.RemoveFromCache(p)
+	proxyinabox.DB.Unscoped().Delete(&p)
+}
+
+// RemoveFromCache 只从内存缓存移除，不删除数据库记录
+func (c *MemCache) RemoveFromCache(p proxyinabox.Proxy) {
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 	for i, e := range c.proxies.pl {
@@ -361,8 +370,6 @@ func (c *MemCache) DeleteProxy(p proxyinabox.Proxy) {
 			break
 		}
 	}
-	//hard delete
-	proxyinabox.DB.Unscoped().Delete(&p)
 }
 
 // GetAllProxies 返回代理池中所有代理的快照副本（用于 dashboard 展示）

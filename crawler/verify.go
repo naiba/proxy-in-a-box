@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -10,9 +11,13 @@ import (
 var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
 
+// staleProxyThreshold 代理最后验证超过此时间视为不活跃，将被清理
+const staleProxyThreshold = 6 * 30 * 24 * time.Hour // 约6个月
+
 // Init initializes both the validation workers and verify workers
 func Init() {
 	CleanupStaleSessions()
+	LoadLockedIPs()
 
 	// 初始化 proxy 验证 workers
 	ValidateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
@@ -35,8 +40,25 @@ func Verify() {
 	}
 }
 
+// CleanupStaleProxies 删除最后验证时间超过 6 个月的代理记录，回收长期不活跃的陈旧数据
+func CleanupStaleProxies() {
+	cutoff := time.Now().Add(-staleProxyThreshold)
+	result := proxyinabox.DB.Unscoped().Where("last_verify < ? AND last_verify > ?", cutoff, time.Time{}).Delete(&proxyinabox.Proxy{})
+	if result.Error != nil {
+		fmt.Printf("[PIAB] stale cleanup [❎] error: %v\n", result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		fmt.Printf("[PIAB] stale cleanup [🧹] removed %d proxies inactive for 6+ months\n", result.RowsAffected)
+	}
+}
+
 func getDelay(pc chan proxyinabox.Proxy) {
 	for p := range pc {
+		if IsIPLocked(p.IP) {
+			continue
+		}
+
 		proxy := p.URI()
 		start := time.Now().Unix()
 		body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*5, proxy, 3)
@@ -46,9 +68,11 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		}
 		delay := time.Now().Unix() - start
 		if err != nil || trace.IP != p.IP {
-			proxyinabox.CI.DeleteProxy(p)
+			RecordProxyFailure(p.IP)
+			proxyinabox.CI.RemoveFromCache(p)
 			continue
 		}
+		ClearProxyFailure(p.IP)
 		proxyinabox.DB.Model(&p).Updates(map[string]interface{}{"delay": delay, "last_verify": time.Now()})
 	}
 }

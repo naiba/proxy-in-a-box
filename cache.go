@@ -14,5 +14,6 @@ type Cache interface {
 	HasProxy(p string) bool
 	SaveProxy(p Proxy) error
 	DeleteProxy(p Proxy)
+	RemoveFromCache(p Proxy)
 	GetAllProxies() []Proxy
 }
