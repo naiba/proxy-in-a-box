@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
@@ -150,9 +151,12 @@ var rootCmd = &cobra.Command{
 		}
 		crawler.FetchAllSources(sources)
 		crawler.Verify()
+		crawler.CleanupStaleProxies()
 
 		c := cron.New(cron.WithSeconds())
 		c.AddFunc("0 "+strconv.Itoa(proxyinabox.Config.Sys.VerifyDuration)+" * * * *", crawler.Verify)
+		// 每天凌晨清理超过 6 个月未验证的陈旧代理记录
+		c.AddFunc("0 0 3 * * *", crawler.CleanupStaleProxies)
 		c.Start()
 
 		// 信号处理：统一的清理路径，确保 pinchtab 和 Chrome 子进程被完整回收
@@ -206,11 +210,14 @@ var rootCmd = &cobra.Command{
 				byProtocol[proto]++
 				bySource[p.Source]++
 			}
+			var blockedIPCount int64
+			proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("locked_until > ?", time.Now()).Count(&blockedIPCount)
 			stats := map[string]interface{}{
 				"version":       version,
 				"total":         len(proxies),
 				"by_protocol":   byProtocol,
 				"by_source":     bySource,
+				"blocked_ips":   blockedIPCount,
 				"processes":     mitm.GetProcessCounts(),
 				"request_stats": mitm.GlobalRequestStats.Snapshot(),
 			}
@@ -248,6 +255,7 @@ var rootCmd = &cobra.Command{
 
 		// API: 各源抓取状态
 		managerHttpServer.HandleFunc("/api/sources", func(w http.ResponseWriter, r *http.Request) {
+			crawler.UpdateSourceAvailableCounts(proxyinabox.CI.GetAllProxies())
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(crawler.GetSourceStatuses())
 		})

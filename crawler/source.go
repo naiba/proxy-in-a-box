@@ -37,6 +37,8 @@ type SourceStatus struct {
 	ProxyCount int       `json:"proxy_count"`
 	Error      string    `json:"error"`
 	Interval   string    `json:"interval"`
+	// AvailableCount 该源当前在代理池中验证通过的可用代理数（实时从缓存统计）
+	AvailableCount int `json:"available_count"`
 }
 
 var (
@@ -150,6 +152,19 @@ func updateSourceStatus(index int, proxyCount int, fetchErr error) {
 		sourceStatuses[index].Error = fetchErr.Error()
 	} else {
 		sourceStatuses[index].Error = ""
+	}
+}
+
+// UpdateSourceAvailableCounts 根据代理池快照更新各源的可用代理计数
+func UpdateSourceAvailableCounts(proxies []proxyinabox.Proxy) {
+	countBySource := make(map[string]int)
+	for _, p := range proxies {
+		countBySource[p.Source]++
+	}
+	sourceStatusesMu.Lock()
+	defer sourceStatusesMu.Unlock()
+	for i := range sourceStatuses {
+		sourceStatuses[i].AvailableCount = countBySource[sourceStatuses[i].Name]
 	}
 }
 
