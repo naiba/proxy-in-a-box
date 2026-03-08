@@ -39,6 +39,10 @@ a{color:var(--blue);text-decoration:none}
 .proto-https{background:#34d39920;color:var(--emerald);border:1px solid #34d39940}
 .proto-socks4{background:#f59e4220;color:var(--orange);border:1px solid #f59e4240}
 .proto-socks5{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
+.process-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.proc-badge{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:3px;font-weight:500}
+.proc-chromium{background:#f59e4220;color:var(--orange);border:1px solid #f59e4240}
+.proc-pinchtab{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
 
 /* Section */
 .section{margin:24px 0 12px}
@@ -94,6 +98,9 @@ tr:hover td{background:#ffffff06}
     <div class="stat-card"><div class="label">Total Proxies</div><div class="value" id="statTotal">—</div></div>
     <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="protocol-badges" id="protoBadges"></div></div>
     <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="sub" id="statSourcesSub"></div></div>
+    <div class="stat-card"><div class="label">Processes</div><div class="value" id="statProcesses">—</div><div class="process-badges" id="processBadges"></div></div>
+    <div class="stat-card"><div class="label">Requests</div><div class="value" id="statRequests">—</div><div class="sub" id="statRequestsSub"></div></div>
+    <div class="stat-card"><div class="label">Traffic</div><div class="value" id="statTraffic">—</div><div class="sub" id="statTrafficSub"></div></div>
   </div>
 
   <div class="section"><h2>Sources</h2></div>
@@ -139,6 +146,14 @@ tr:hover td{background:#ffffff06}
     return'proto-http';
   }
 
+  function formatBytes(b){
+    if(b===0)return'0 B';
+    var u=['B','KB','MB','GB','TB'];
+    var i=Math.floor(Math.log(b)/Math.log(1024));
+    if(i>=u.length)i=u.length-1;
+    return(b/Math.pow(1024,i)).toFixed(i>0?1:0)+' '+u[i];
+  }
+
   function renderStats(stats){
     var t=stats.total||0;
     document.getElementById('statTotal').textContent=t;
@@ -154,6 +169,22 @@ tr:hover td{background:#ffffff06}
     var bs=stats.by_source||{},sk=Object.keys(bs);
     document.getElementById('statSources').textContent=sk.length;
     document.getElementById('statSourcesSub').textContent=sk.join(', ');
+
+    var proc=stats.processes||{};
+    var totalProc=(proc.chromium||0)+(proc.pinchtab||0);
+    document.getElementById('statProcesses').textContent=totalProc;
+    document.getElementById('processBadges').innerHTML=
+      '<span class="proc-badge proc-chromium">chromium: '+(proc.chromium||0)+'</span>'+
+      '<span class="proc-badge proc-pinchtab">pinchtab: '+(proc.pinchtab||0)+'</span>';
+
+    var rs=stats.request_stats||{};
+    document.getElementById('statRequests').textContent=rs.total_requests||0;
+    var rate=rs.success_rate||0;
+    document.getElementById('statRequestsSub').textContent=
+      'success: '+(rs.success_requests||0)+' / failed: '+(rs.failed_requests||0)+' ('+Math.round(rate*100)+'%)';
+
+    document.getElementById('statTraffic').textContent=formatBytes(rs.bytes_transferred||0);
+    document.getElementById('statTrafficSub').textContent='HTTP response body only';
   }
 
   function renderSources(sources){

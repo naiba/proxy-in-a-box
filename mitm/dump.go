@@ -19,6 +19,7 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 
 	defer func() {
 		if err != nil {
+			GlobalRequestStats.FailedRequests.Add(1)
 			clientResponse.WriteHeader(http.StatusBadGateway)
 			clientResponse.Write([]byte(err.Error()))
 		}
@@ -65,11 +66,13 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	// write response code
 	clientResponse.WriteHeader(remoteResponse.StatusCode)
 	// write response body
-	_, err = clientResponse.Write(body)
+	n, err := clientResponse.Write(body)
 	if err != nil {
 		fmt.Println("[MITM]", "connIn write", "[❎]", err)
 		return
 	}
+	GlobalRequestStats.SuccessRequests.Add(1)
+	GlobalRequestStats.BytesTransferred.Add(int64(n))
 	// show http dump
 	if m.Print {
 		fmt.Println("[MITM]", "REQUEST-DUMP", "[📮]", string(clientRequestDump))

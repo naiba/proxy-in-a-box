@@ -156,9 +156,11 @@ var rootCmd = &cobra.Command{
 				bySource[p.Source]++
 			}
 			stats := map[string]interface{}{
-				"total":       len(proxies),
-				"by_protocol": byProtocol,
-				"by_source":   bySource,
+				"total":         len(proxies),
+				"by_protocol":   byProtocol,
+				"by_source":     bySource,
+				"processes":     mitm.GetProcessCounts(),
+				"request_stats": mitm.GlobalRequestStats.Snapshot(),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(stats)

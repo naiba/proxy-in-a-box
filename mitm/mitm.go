@@ -128,8 +128,10 @@ func (m *MITM) ServeHTTP() {
 }
 
 func (m *MITM) serve(w http.ResponseWriter, r *http.Request) {
-	//鉴权、清洗、限流
+	GlobalRequestStats.TotalRequests.Add(1)
+
 	if e := m.Filter(r); e != nil {
+		GlobalRequestStats.FailedRequests.Add(1)
 		http.Error(w, e.Error(), http.StatusProxyAuthRequired)
 		return
 	}
@@ -194,16 +196,19 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 
 	proxy, schedErr := m.Scheduler(r)
 	if schedErr != nil {
+		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy scheduler error: %s", schedErr))
 		return
 	}
 	proxyURL, parseErr := url.Parse(proxy)
 	if parseErr != nil {
+		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy parse error: %s", parseErr))
 		return
 	}
 	remoteConn, err = net.DialTimeout("tcp", proxyURL.Host, 15*time.Second)
 	if err != nil {
+		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial upstream proxy error: %s", err))
 		return
 	}
@@ -219,6 +224,7 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	resp := string(buf[:n])
 	if !strings.Contains(resp, "200") {
 		remoteConn.Close()
+		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS upstream proxy rejected CONNECT: %s", resp))
 		return
 	}
@@ -226,10 +232,12 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	clientConn, _, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		remoteConn.Close()
+		GlobalRequestStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS hijack error: %s", err))
 		return
 	}
 
+	GlobalRequestStats.SuccessRequests.Add(1)
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
 	go func() {
