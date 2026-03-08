@@ -22,11 +22,12 @@ import (
 // BrowserSession 管理单次浏览器抓取的完整生命周期（pinchtab 进程 + Chrome profile）
 // 每个 runScript 调用创建独立 session，用完即销毁，避免资源泄漏和 cookie/指纹污染
 type BrowserSession struct {
-	cmd     *exec.Cmd
-	port    string
-	profile string
-	client  *http.Client
-	mu      sync.Mutex
+	cmd       *exec.Cmd
+	port      string
+	profile   string
+	client    *http.Client
+	proxyAddr string
+	mu        sync.Mutex
 }
 
 // 当前活跃 session（每个 runScript goroutine 通过 goroutine-local 模式使用）
@@ -68,6 +69,11 @@ func (s *BrowserSession) start() error {
 	}
 	s.profile = profileDir
 
+	chromeFlags := "--no-sandbox --disable-dev-shm-usage"
+	if s.proxyAddr != "" {
+		chromeFlags += " --proxy-server=" + s.proxyAddr
+	}
+
 	s.cmd = exec.Command(cfg.Bin)
 	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	s.cmd.Env = append(os.Environ(),
@@ -76,7 +82,7 @@ func (s *BrowserSession) start() error {
 		"PINCHTAB_HEADLESS=true",
 		"PINCHTAB_ALLOW_EVALUATE=true",
 		"PINCHTAB_STEALTH=full",
-		"CHROME_FLAGS=--no-sandbox --disable-dev-shm-usage",
+		"CHROME_FLAGS="+chromeFlags,
 	)
 	s.cmd.Stdout = os.Stdout
 	s.cmd.Stderr = os.Stderr
@@ -179,13 +185,41 @@ func (s *BrowserSession) evaluate(expression string) (string, error) {
 	return fmt.Sprintf("%v", result.Result), nil
 }
 
+// startSessionWithProxy 启动带指定 proxy 的 pinchtab 实例，设置为 activeSession
+func startSessionWithProxy(proxyAddr string) (*BrowserSession, error) {
+	session := &BrowserSession{proxyAddr: proxyAddr}
+	if err := session.start(); err != nil {
+		return nil, err
+	}
+	activeSession = session
+	return session, nil
+}
+
+// destroyActiveSession 销毁当前 activeSession（调用方必须持有 activeSessionMu）
+func destroyActiveSession() {
+	if activeSession == nil {
+		return
+	}
+	session := activeSession
+	activeSession = nil
+
+	session.mu.Lock()
+	session.navigate("about:blank")
+	session.mu.Unlock()
+	session.stop()
+}
+
 // BrowserFetch 启动临时 pinchtab 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
+// 优先通过代理池中的随机 proxy 启动浏览器（Chromium --proxy-server），若导航失败则销毁 session 并用直连重试。
 func BrowserFetch(targetURL string) (string, error) {
 	activeSessionMu.Lock()
+
 	if activeSession == nil {
-		activeSession = &BrowserSession{}
-		if err := activeSession.start(); err != nil {
-			activeSession = nil
+		var proxyAddr string
+		if proxyinabox.CI != nil {
+			proxyAddr, _ = proxyinabox.CI.RandomProxy()
+		}
+		if _, err := startSessionWithProxy(proxyAddr); err != nil {
 			activeSessionMu.Unlock()
 			return "", err
 		}
@@ -194,15 +228,37 @@ func BrowserFetch(targetURL string) (string, error) {
 	activeSessionMu.Unlock()
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
+	err := session.navigate(targetURL)
+	session.mu.Unlock()
 
-	if err := session.navigate(targetURL); err != nil {
+	if err != nil && session.proxyAddr != "" {
+		if proxyinabox.Config.Debug {
+			fmt.Printf("[PIAB] browser [⚠️] proxy navigate failed for %s, fallback to direct: %v\n", targetURL, err)
+		}
+		activeSessionMu.Lock()
+		destroyActiveSession()
+		fallbackSession, startErr := startSessionWithProxy("")
+		activeSessionMu.Unlock()
+		if startErr != nil {
+			return "", fmt.Errorf("fallback direct browser start failed: %w", startErr)
+		}
+
+		fallbackSession.mu.Lock()
+		err = fallbackSession.navigate(targetURL)
+		fallbackSession.mu.Unlock()
+		if err != nil {
+			return "", fmt.Errorf("navigate to %s failed (direct fallback): %w", targetURL, err)
+		}
+		session = fallbackSession
+	} else if err != nil {
 		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
 	}
 
 	time.Sleep(5 * time.Second)
 
+	session.mu.Lock()
 	html, err := session.evaluate("document.body.innerHTML")
+	session.mu.Unlock()
 	if err != nil {
 		return "", fmt.Errorf("failed to get rendered HTML: %w", err)
 	}
@@ -229,19 +285,8 @@ func BrowserEval(expression string) (string, error) {
 // ReleaseBrowser 停止当前 pinchtab 实例并清理 Chrome profile，释放所有资源
 func ReleaseBrowser() {
 	activeSessionMu.Lock()
-	session := activeSession
-	activeSession = nil
+	destroyActiveSession()
 	activeSessionMu.Unlock()
-
-	if session == nil {
-		return
-	}
-
-	session.mu.Lock()
-	session.navigate("about:blank")
-	session.mu.Unlock()
-
-	session.stop()
 }
 
 // StartPinchtab 兼容 test-source 子命令的预启动接口
