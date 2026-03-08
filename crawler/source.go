@@ -213,6 +213,7 @@ func fetchJSONSource(src Source) ([]proxyinabox.Proxy, error) {
 
 // parseTextResponse parses a plain text body where each line is ip:port
 // Handles spys.me format "ip:port EXTRA" by splitting on space first
+// 同时支持 "protocol://ip:port" 格式（如 trio666 源），自动提取协议并剥离前缀
 func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 	var proxies []proxyinabox.Proxy
 	lines := strings.Split(body, "\n")
@@ -225,6 +226,12 @@ func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 		if idx := strings.IndexByte(line, ' '); idx != -1 {
 			line = line[:idx]
 		}
+		// 支持 "protocol://ip:port" 格式：提取协议并剥离 scheme 前缀
+		protocol := src.Protocol
+		if schemeEnd := strings.Index(line, "://"); schemeEnd != -1 {
+			protocol = strings.ToLower(line[:schemeEnd])
+			line = line[schemeEnd+3:]
+		}
 		host, port, err := net.SplitHostPort(line)
 		if err != nil {
 			continue
@@ -233,7 +240,7 @@ func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 			IP:       host,
 			Port:     port,
 			Source:   src.Name,
-			Protocol: src.Protocol,
+			Protocol: protocol,
 		})
 	}
 	return proxies

@@ -109,6 +109,31 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 	}
 }
 
+// ValidateProxy 通过代理访问 Cloudflare trace 端点验证代理可用性，返回验证结果
+// 不依赖 DB/Cache，仅做网络验证，供 test-source 命令使用
+func ValidateProxy(p proxyinabox.Proxy) (country string, delay int64, err error) {
+	p.IP = strings.TrimSpace(p.IP)
+	proxy := p.URI()
+	start := time.Now().Unix()
+
+	body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*7, proxy, 2)
+	if err != nil {
+		return "", 0, fmt.Errorf("connect failed: %w", err)
+	}
+
+	trace, err := parseCloudflareTrace(body)
+	if err != nil {
+		return "", 0, err
+	}
+
+	// 验证代理返回的出口 IP 必须与代理声称的 IP 一致
+	if trace.IP != p.IP {
+		return "", 0, fmt.Errorf("ip mismatch: expected %s, got %s", p.IP, trace.IP)
+	}
+
+	return trace.Loc, time.Now().Unix() - start, nil
+}
+
 // GetURLThroughProxyWithRetry fetches a URL through the given proxy with retry logic
 func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr string, retry int, customHeaders ...http.Header) ([]byte, error) {
 	transport := &http.Transport{

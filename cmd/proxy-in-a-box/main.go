@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/robfig/cron/v3"
@@ -24,10 +25,11 @@ import (
 var configFilePath, httpProxyAddr, httpsProxyAddr, manageAddr string
 var m *mitm.MITM
 var version = "dev"
+var testSourceVerifyWorkers int
 
 var testSourceCmd = &cobra.Command{
 	Use:   "test-source [yaml-file]",
-	Short: "Test a single proxy source YAML file",
+	Short: "Test a single proxy source YAML file (fetch + verify availability)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		viper.SetConfigType("yaml")
@@ -69,9 +71,57 @@ var testSourceCmd = &cobra.Command{
 			fmt.Printf("[PIAB] ❎ fetch error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("[PIAB] ✅ fetched %d proxies:\n", len(proxies))
-		for i, p := range proxies {
-			fmt.Printf("  %3d. %s %s:%s\n", i+1, p.Protocol, p.IP, p.Port)
+		fmt.Printf("[PIAB] ✅ fetched %d proxies\n", len(proxies))
+
+		workers := testSourceVerifyWorkers
+		if workers <= 0 {
+			workers = 20
+		}
+		if workers > len(proxies) {
+			workers = len(proxies)
+		}
+		if len(proxies) == 0 {
+			fmt.Println("[PIAB] no proxies to verify")
+			return
+		}
+
+		fmt.Printf("[PIAB] verifying proxies with %d workers ...\n", workers)
+		type verifyResult struct {
+			proxy   proxyinabox.Proxy
+			country string
+			delay   int64
+		}
+		var (
+			verified []verifyResult
+			mu       sync.Mutex
+			wg       sync.WaitGroup
+		)
+		jobCh := make(chan proxyinabox.Proxy, workers)
+
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for p := range jobCh {
+					country, delay, err := crawler.ValidateProxy(p)
+					if err == nil {
+						mu.Lock()
+						verified = append(verified, verifyResult{proxy: p, country: country, delay: delay})
+						mu.Unlock()
+					}
+				}
+			}()
+		}
+
+		for _, p := range proxies {
+			jobCh <- p
+		}
+		close(jobCh)
+		wg.Wait()
+
+		fmt.Printf("[PIAB] ✅ verification complete: %d/%d proxies available\n", len(verified), len(proxies))
+		for i, v := range verified {
+			fmt.Printf("  %3d. %s %s:%s [%s] delay=%ds\n", i+1, v.proxy.Protocol, v.proxy.IP, v.proxy.Port, v.country, v.delay)
 		}
 	},
 }
@@ -223,6 +273,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&httpProxyAddr, "ha", "p", "0.0.0.0:8080", "http proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&httpsProxyAddr, "sa", "s", "0.0.0.0:8081", "https proxy server addr")
 	rootCmd.PersistentFlags().StringVarP(&manageAddr, "ma", "m", "0.0.0.0:8083", "management/dashboard addr")
+	testSourceCmd.Flags().IntVarP(&testSourceVerifyWorkers, "workers", "w", 20, "concurrent verification workers")
 	rootCmd.AddCommand(testSourceCmd)
 }
 
