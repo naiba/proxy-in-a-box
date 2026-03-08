@@ -17,21 +17,32 @@ type RequestStats struct {
 	BytesTransferred atomic.Int64
 }
 
+// ProtocolRequestStats 按上游协议（HTTP 明文 / HTTPS CONNECT 隧道）分别统计请求数和流量
+type ProtocolRequestStats struct {
+	HTTP  RequestStats
+	HTTPS RequestStats
+}
+
 // trafficCountingWriter 包装 io.Writer，将写入字节数实时累加到 GlobalRequestStats.BytesTransferred。
 // 用于 io.Copy 场景（如 HTTPS 隧道透传），无需缓存整个响应即可精确计量流量。
 type trafficCountingWriter struct {
-	inner io.Writer
+	inner         io.Writer
+	protocolStats *RequestStats
 }
 
 func (w *trafficCountingWriter) Write(p []byte) (int, error) {
 	n, err := w.inner.Write(p)
 	if n > 0 {
 		GlobalRequestStats.BytesTransferred.Add(int64(n))
+		if w.protocolStats != nil {
+			w.protocolStats.BytesTransferred.Add(int64(n))
+		}
 	}
 	return n, err
 }
 
 var GlobalRequestStats = &RequestStats{}
+var GlobalProtocolStats = &ProtocolRequestStats{}
 
 type RequestStatsSnapshot struct {
 	TotalRequests    int64   `json:"total_requests"`
@@ -39,6 +50,12 @@ type RequestStatsSnapshot struct {
 	FailedRequests   int64   `json:"failed_requests"`
 	SuccessRate      float64 `json:"success_rate"`
 	BytesTransferred int64   `json:"bytes_transferred"`
+}
+
+type ProtocolStatsSnapshot struct {
+	Total RequestStatsSnapshot `json:"total"`
+	HTTP  RequestStatsSnapshot `json:"http"`
+	HTTPS RequestStatsSnapshot `json:"https"`
 }
 
 func (s *RequestStats) Snapshot() RequestStatsSnapshot {
@@ -57,6 +74,14 @@ func (s *RequestStats) Snapshot() RequestStatsSnapshot {
 		FailedRequests:   failed,
 		SuccessRate:      rate,
 		BytesTransferred: bytes,
+	}
+}
+
+func (s *ProtocolRequestStats) Snapshot() ProtocolStatsSnapshot {
+	return ProtocolStatsSnapshot{
+		Total: GlobalRequestStats.Snapshot(),
+		HTTP:  s.HTTP.Snapshot(),
+		HTTPS: s.HTTPS.Snapshot(),
 	}
 }
 

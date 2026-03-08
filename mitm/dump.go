@@ -21,9 +21,16 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	var remoteResponse *http.Response
 	var err error
 
+	// injectHTTPS 解密后会设置 Scheme="https"，以此区分 HTTP 明文和 HTTPS MITM 路径
+	protoStats := &GlobalProtocolStats.HTTP
+	if clientRequest.URL.Scheme == "https" {
+		protoStats = &GlobalProtocolStats.HTTPS
+	}
+
 	defer func() {
 		if err != nil {
 			GlobalRequestStats.FailedRequests.Add(1)
+			protoStats.FailedRequests.Add(1)
 			clientResponse.WriteHeader(http.StatusBadGateway)
 			clientResponse.Write([]byte(err.Error()))
 		}
@@ -76,11 +83,14 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		return
 	}
 	GlobalRequestStats.SuccessRequests.Add(1)
+	protoStats.SuccessRequests.Add(1)
 	// BUG-FIX: 之前只统计了响应体字节数，漏掉了请求体，导致流量统计偏低
 	if clientRequest.ContentLength > 0 {
 		GlobalRequestStats.BytesTransferred.Add(clientRequest.ContentLength)
+		protoStats.BytesTransferred.Add(clientRequest.ContentLength)
 	}
 	GlobalRequestStats.BytesTransferred.Add(int64(n))
+	protoStats.BytesTransferred.Add(int64(n))
 	// show http dump
 	if m.Print {
 		fmt.Println("[MITM]", "REQUEST-DUMP", "[📮]", string(clientRequestDump))

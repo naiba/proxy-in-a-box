@@ -219,7 +219,7 @@ var rootCmd = &cobra.Command{
 				"by_source":     bySource,
 				"blocked_ips":   blockedIPCount,
 				"processes":     mitm.GetProcessCounts(),
-				"request_stats": mitm.GlobalRequestStats.Snapshot(),
+				"request_stats": mitm.GlobalProtocolStats.Snapshot(),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(stats)

@@ -133,16 +133,25 @@ func (m *MITM) serve(w http.ResponseWriter, r *http.Request) {
 
 	if e := m.Filter(r); e != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		if r.Method == http.MethodConnect {
+			GlobalProtocolStats.HTTPS.TotalRequests.Add(1)
+			GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
+		} else {
+			GlobalProtocolStats.HTTP.TotalRequests.Add(1)
+			GlobalProtocolStats.HTTP.FailedRequests.Add(1)
+		}
 		http.Error(w, e.Error(), http.StatusProxyAuthRequired)
 		return
 	}
 	if r.Method == http.MethodConnect {
+		GlobalProtocolStats.HTTPS.TotalRequests.Add(1)
 		if m.EnableMITM {
 			m.injectHTTPS(w, r)
 		} else {
 			m.tunnelHTTPS(w, r)
 		}
 	} else {
+		GlobalProtocolStats.HTTP.TotalRequests.Add(1)
 		m.Dump(w, r)
 	}
 }
@@ -155,6 +164,7 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		// BUG-FIX: 之前 injectHTTPS 的失败路径漏掉了 FailedRequests 计数，导致 Total ≠ Success + Failed
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		msg := fmt.Sprintf("[MITM] injectHTTPS [💖] Could not get mitm cert for name: %s\nerror: %s", host, err)
 		badGateWay(resp, msg)
 		return
@@ -164,6 +174,7 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 	connIn, _, err := resp.(http.Hijacker).Hijack()
 	if err != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		msg := fmt.Sprintf("[MITM] injectHTTPS [💖] Unable to access underlying connection from client: %s", err)
 		badGateWay(resp, msg)
 		return
@@ -198,12 +209,14 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	proxyURI, schedErr := m.Scheduler(r)
 	if schedErr != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy scheduler error: %s", schedErr))
 		return
 	}
 	proxyURL, parseErr := url.Parse(proxyURI)
 	if parseErr != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy parse error: %s", parseErr))
 		return
 	}
@@ -213,12 +226,14 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	dialer, err := xproxy.FromURL(proxyURL, xproxy.Direct)
 	if err != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS create dialer error: %s", err))
 		return
 	}
 	remoteConn, err := dialer.Dial("tcp", targetAddr)
 	if err != nil {
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial through proxy error: %s", err))
 		return
 	}
@@ -227,20 +242,22 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		remoteConn.Close()
 		GlobalRequestStats.FailedRequests.Add(1)
+		GlobalProtocolStats.HTTPS.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS hijack error: %s", err))
 		return
 	}
 
 	GlobalRequestStats.SuccessRequests.Add(1)
+	GlobalProtocolStats.HTTPS.SuccessRequests.Add(1)
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
 	// BUG-FIX: 之前 io.Copy 直接搬运数据没有统计字节数，导致 HTTPS 隧道模式流量不增长
 	go func() {
-		io.Copy(&trafficCountingWriter{inner: remoteConn}, clientConn)
+		io.Copy(&trafficCountingWriter{inner: remoteConn, protocolStats: &GlobalProtocolStats.HTTPS}, clientConn)
 		remoteConn.Close()
 	}()
 	go func() {
-		io.Copy(&trafficCountingWriter{inner: clientConn}, remoteConn)
+		io.Copy(&trafficCountingWriter{inner: clientConn, protocolStats: &GlobalProtocolStats.HTTPS}, remoteConn)
 		clientConn.Close()
 	}()
 }
