@@ -209,16 +209,34 @@ func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr stri
 			return dialer.Dial(network, addr)
 		}
 		// uTLS 指纹伪装：模拟 Chrome TLS ClientHello，防止被目标网站识别为爬虫
+		// BUG-FIX: HelloChrome_Auto 的预设 ALPN 扩展包含 h2，会覆盖 Config.NextProtos，
+		// 导致服务器协商 HTTP/2，而 http.Transport 通过自定义 DialTLSContext 时只支持
+		// HTTP/1.x，收到 HTTP/2 二进制帧后报 "malformed HTTP response"。
+		// 解决方案：用 HelloCustom + ApplyPreset 先获取 Chrome spec，再修改 ALPN 为仅 http/1.1
 		transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := dialer.Dial(network, addr)
 			if err != nil {
 				return nil, err
 			}
 			serverName, _, _ := net.SplitHostPort(addr)
+			spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+			if err != nil {
+				conn.Close()
+				return nil, err
+			}
+			for _, ext := range spec.Extensions {
+				if alpn, ok := ext.(*utls.ALPNExtension); ok {
+					alpn.AlpnProtocols = []string{"http/1.1"}
+				}
+			}
 			uconn := utls.UClient(conn, &utls.Config{
 				ServerName:         serverName,
 				InsecureSkipVerify: true,
-			}, utls.HelloChrome_Auto)
+			}, utls.HelloCustom)
+			if err := uconn.ApplyPreset(&spec); err != nil {
+				conn.Close()
+				return nil, err
+			}
 			if err := uconn.Handshake(); err != nil {
 				conn.Close()
 				return nil, err

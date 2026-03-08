@@ -2,12 +2,16 @@ package mitm
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	xproxy "golang.org/x/net/proxy"
 )
 
 // Dump rt
@@ -101,7 +105,21 @@ func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, 
 		fmt.Println("[MITM]", "proxy parse", "[❎]", err)
 		return
 	}
-	transport.Proxy = http.ProxyURL(p)
+
+	// BUG-FIX: http.ProxyURL 只支持 HTTP/HTTPS scheme 的代理，SOCKS 代理在此路径下
+	// 会被忽略导致直连。改用 x/net/proxy.FromURL 统一处理所有代理协议的拨号
+	if p.Scheme == "http" || p.Scheme == "https" {
+		transport.Proxy = http.ProxyURL(p)
+	} else {
+		dialer, dialErr := xproxy.FromURL(p, xproxy.Direct)
+		if dialErr != nil {
+			err = dialErr
+			return
+		}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		}
+	}
 
 	clientRequest.RequestURI = ""
 	cli := http.Client{
