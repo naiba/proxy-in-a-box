@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -192,9 +191,7 @@ func ValidateProxy(p proxyinabox.Proxy) (country string, delay int64, err error)
 
 // GetURLThroughProxyWithRetry fetches a URL through the given proxy with retry logic
 func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr string, retry int, customHeaders ...http.Header) ([]byte, error) {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
+	transport := &http.Transport{}
 
 	if proxyAddr != "" {
 		proxyUrl, err := url.Parse(proxyAddr)
@@ -230,8 +227,7 @@ func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr stri
 				}
 			}
 			uconn := utls.UClient(conn, &utls.Config{
-				ServerName:         serverName,
-				InsecureSkipVerify: true,
+				ServerName: serverName,
 			}, utls.HelloCustom)
 			if err := uconn.ApplyPreset(&spec); err != nil {
 				conn.Close()
