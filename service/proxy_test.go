@@ -10,8 +10,6 @@ import (
 func TestGetUnVerified_ExcludesBlockedIPs(t *testing.T) {
 	db := setupTestDB(t)
 
-	proxyinabox.Config.Sys.VerifyDuration = 30
-
 	db.Create(&proxyinabox.Proxy{
 		IP: "1.1.1.1", Port: "8080", Protocol: "http", Source: "test",
 		LastVerify: time.Now().Add(-1 * time.Hour),
@@ -50,8 +48,6 @@ func TestGetUnVerified_ExcludesBlockedIPs(t *testing.T) {
 
 func TestGetUnVerified_RecentlyVerifiedExcluded(t *testing.T) {
 	db := setupTestDB(t)
-
-	proxyinabox.Config.Sys.VerifyDuration = 30
 
 	db.Create(&proxyinabox.Proxy{
 		IP: "3.3.3.3", Port: "8080", Protocol: "http", Source: "test",

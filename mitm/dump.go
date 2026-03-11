@@ -55,12 +55,13 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	}
 
 	// BUG-FIX: 上游代理返回 407（需要认证）或 403（禁止访问）说明代理本身不可用，
-	// 应触发失败记录并从缓存移除，避免持续分配给后续请求
+	// 触发失败记录并从缓存移除，返回 502 给客户端而非转发代理的认证页面
 	if remoteResponse.StatusCode == http.StatusProxyAuthRequired || remoteResponse.StatusCode == http.StatusForbidden {
 		if m.OnProxyFailure != nil {
 			m.OnProxyFailure(selectedProxyURI)
 		}
-		fmt.Printf("[MITM] upstream proxy [⚠️] %s returned %d, marking as failed\n", selectedProxyURI, remoteResponse.StatusCode)
+		err = fmt.Errorf("upstream proxy %s returned %d", selectedProxyURI, remoteResponse.StatusCode)
+		return
 	}
 
 	remoteResponseDump, err = httputil.DumpResponse(remoteResponse, true)

@@ -85,7 +85,6 @@ sys:
   proxy_verify_worker: 20    # concurrent verification workers
   domains_per_ip: 30         # max domains per IP in 30 minutes
   request_limit_per_ip: 10   # max requests per IP per second
-  verify_duration: 30        # re-verify interval in minutes
 
 # HTTPS MITM decryption (default: false)
 # When enabled, the proxy decrypts HTTPS traffic using a self-signed CA — clients must disable TLS verification or trust the CA.

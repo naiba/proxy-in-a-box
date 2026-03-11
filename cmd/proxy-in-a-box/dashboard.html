@@ -27,10 +27,11 @@ a{color:var(--blue);text-decoration:none}
 
 /* Stats */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0}
-.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px 18px;max-height:200px;overflow-y:auto}
-.stat-card::-webkit-scrollbar{width:5px}
-.stat-card::-webkit-scrollbar-track{background:var(--surface)}
-.stat-card::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px 18px}
+.stat-card-scrollable{max-height:120px;overflow-y:auto}
+.stat-card-scrollable::-webkit-scrollbar{width:5px}
+.stat-card-scrollable::-webkit-scrollbar-track{background:var(--surface)}
+.stat-card-scrollable::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:3px}
 .stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:6px}
 .stat-card .value{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--text-bright)}
 .stat-card .sub{font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-top:6px}
@@ -98,18 +99,18 @@ tr:hover td{background:#ffffff06}
 
   <div class="stats" id="statsRow">
     <div class="stat-card"><div class="label">Total Proxies</div><div class="value" id="statTotal">—</div></div>
-    <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="protocol-badges" id="protoBadges"></div></div>
-    <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="sub" id="statSourcesSub"></div></div>
-    <div class="stat-card"><div class="label">Processes</div><div class="value" id="statProcesses">—</div><div class="process-badges" id="processBadges"></div></div>
-    <div class="stat-card"><div class="label">Blocked IPs</div><div class="value" id="statBlocked">—</div><div class="sub" id="statBlockedSub">locked for 15 days</div></div>
-    <div class="stat-card"><div class="label">Requests</div><div class="value" id="statRequests">—</div><div class="sub" id="statRequestsSub"></div></div>
-    <div class="stat-card"><div class="label">Traffic</div><div class="value" id="statTraffic">—</div><div class="sub" id="statTrafficSub"></div></div>
+    <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="stat-card-scrollable"><div class="protocol-badges" id="protoBadges"></div></div></div>
+    <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="stat-card-scrollable"><div class="sub" id="statSourcesSub"></div></div></div>
+    <div class="stat-card"><div class="label">Processes</div><div class="value" id="statProcesses">—</div><div class="stat-card-scrollable"><div class="process-badges" id="processBadges"></div></div></div>
+    <div class="stat-card"><div class="label">Blocked IPs</div><div class="value" id="statBlocked">—</div><div class="stat-card-scrollable"><div class="sub" id="statBlockedSub">locked for 15 days</div></div></div>
+    <div class="stat-card"><div class="label">Requests</div><div class="value" id="statRequests">—</div><div class="stat-card-scrollable"><div class="sub" id="statRequestsSub"></div></div></div>
+    <div class="stat-card"><div class="label">Traffic</div><div class="value" id="statTraffic">—</div><div class="stat-card-scrollable"><div class="sub" id="statTrafficSub"></div></div></div>
   </div>
 
   <div class="section"><h2>Sources</h2></div>
   <div class="table-wrap">
     <table><thead><tr>
-      <th>Name</th><th>Type</th><th>Interval</th><th>Last Fetch</th><th>Proxies</th><th>Available</th><th>Status</th>
+      <th data-src-col="name">Name<span class="sort-arrow">▲</span></th><th data-src-col="type">Type<span class="sort-arrow">▲</span></th><th data-src-col="interval">Interval<span class="sort-arrow">▲</span></th><th data-src-col="last_fetch">Last Fetch<span class="sort-arrow">▲</span></th><th data-src-col="proxy_count">Proxies<span class="sort-arrow">▲</span></th><th data-src-col="available_count">Available<span class="sort-arrow">▲</span></th><th data-src-col="status">Status<span class="sort-arrow">▲</span></th>
     </tr></thead><tbody id="sourcesBody"></tbody></table>
   </div>
 
@@ -131,6 +132,7 @@ tr:hover td{background:#ffffff06}
 <script>
 (function(){
   var sortCol='delay',sortAsc=true,proxiesData=[],countdown=30;
+  var sourceSortCol='name',sourceSortAsc=true,sourcesData=[];
 
   function relTime(ts){
     if(!ts)return'—';
@@ -209,17 +211,49 @@ tr:hover td{background:#ffffff06}
     if(stats.version)document.getElementById('versionFooter').textContent='Proxy-in-a-Box '+stats.version;
   }
 
-  function renderSources(sources){
+  function renderSources(){
+    sortSources();
     var tb=document.getElementById('sourcesBody'),html='';
-    if(!sources||!sources.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--text-dim);text-align:center;padding:20px">No sources loaded</td></tr>';return}
-    for(var i=0;i<sources.length;i++){
-      var s=sources[i],hasErr=s.error&&s.error.length>0,isPending=!s.last_fetch||s.last_fetch==='0001-01-01T00:00:00Z';
+    if(!sourcesData||!sourcesData.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--text-dim);text-align:center;padding:20px">No sources loaded</td></tr>';return}
+    for(var i=0;i<sourcesData.length;i++){
+      var s=sourcesData[i],hasErr=s.error&&s.error.length>0,isPending=!s.last_fetch||s.last_fetch==='0001-01-01T00:00:00Z';
       var dotCls=isPending?'dot-pending':(hasErr?'dot-err':'dot-ok');
       var statusText=hasErr?'<span class="err-tip" data-err="'+s.error.replace(/"/g,'&quot;')+'">error</span>':(isPending?'pending':'ok');
       var statusCell='<span class="dot '+dotCls+'"></span>'+statusText;
       html+='<tr><td>'+s.name+'</td><td>'+s.type+'</td><td>'+(s.interval||'5m')+'</td><td>'+(isPending?'—':relTime(s.last_fetch))+'</td><td>'+s.proxy_count+'</td><td>'+(s.available_count||0)+'</td><td>'+statusCell+'</td></tr>';
     }
     tb.innerHTML=html;
+    // update sources sort headers
+    var ths=document.querySelectorAll('[data-src-col]');
+    for(var j=0;j<ths.length;j++){
+      ths[j].classList.toggle('sorted',ths[j].getAttribute('data-src-col')===sourceSortCol);
+      ths[j].querySelector('.sort-arrow').textContent=ths[j].getAttribute('data-src-col')===sourceSortCol?(sourceSortAsc?'▲':'▼'):'▲';
+    }
+  }
+
+  function sortSources(){
+    sourcesData.sort(function(a,b){
+      var va,vb;
+      if(sourceSortCol==='proxy_count'||sourceSortCol==='available_count'){
+        va=Number(a[sourceSortCol])||0;vb=Number(b[sourceSortCol])||0;
+      }else if(sourceSortCol==='last_fetch'){
+        va=new Date(a.last_fetch||0).getTime();vb=new Date(b.last_fetch||0).getTime();
+      }else if(sourceSortCol==='status'){
+        // Sort order: ok (0) < error (1) < pending (2)
+        function statusRank(s){
+          var isPending=!s.last_fetch||s.last_fetch==='0001-01-01T00:00:00Z';
+          if(isPending)return 2;
+          if(s.error&&s.error.length>0)return 1;
+          return 0;
+        }
+        va=statusRank(a);vb=statusRank(b);
+      }else{
+        va=String(a[sourceSortCol]||'').toLowerCase();vb=String(b[sourceSortCol]||'').toLowerCase();
+      }
+      if(va<vb)return sourceSortAsc?-1:1;
+      if(va>vb)return sourceSortAsc?1:-1;
+      return 0;
+    });
   }
 
   function sortProxies(){
@@ -251,12 +285,21 @@ tr:hover td{background:#ffffff06}
     }
   }
 
-  // Column sort
+  // Proxies column sort
   document.querySelectorAll('[data-col]').forEach(function(th){
     th.addEventListener('click',function(){
       var col=this.getAttribute('data-col');
       if(sortCol===col){sortAsc=!sortAsc}else{sortCol=col;sortAsc=true}
       renderProxies();
+    });
+  });
+
+  // Sources column sort
+  document.querySelectorAll('[data-src-col]').forEach(function(th){
+    th.addEventListener('click',function(){
+      var col=this.getAttribute('data-src-col');
+      if(sourceSortCol===col){sourceSortAsc=!sourceSortAsc}else{sourceSortCol=col;sourceSortAsc=true}
+      renderSources();
     });
   });
 
@@ -267,7 +310,8 @@ tr:hover td{background:#ffffff06}
       fetch('/api/proxies').then(function(r){return r.json()})
     ]).then(function(res){
       renderStats(res[0]);
-      renderSources(res[1]);
+      sourcesData=res[1]||[];
+      renderSources();
       proxiesData=res[2]||[];
       renderProxies();
     }).catch(function(e){console.error('fetch error',e)});

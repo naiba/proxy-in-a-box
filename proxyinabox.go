@@ -27,7 +27,6 @@ type Conf struct {
 		ProxyVerifyWorker int   `mapstructure:"proxy_verify_worker"`
 		DomainsPerIP      int   `mapstructure:"domains_per_ip"`
 		RequestLimitPerIP int64 `mapstructure:"request_limit_per_ip"`
-		VerifyDuration    int   `mapstructure:"verify_duration"`
 	}
 	Pinchtab struct {
 		// pinchtab 二进制路径，留空则禁用浏览器抓取
@@ -47,7 +46,6 @@ var DataDir string
 // Init init system
 func Init(configFilePath string) {
 	DataDir = filepath.Dir(configFilePath)
-	validateConf()
 	initDB()
 }
 
@@ -61,10 +59,4 @@ func initDB() {
 		DB = DB.Debug()
 	}
 	DB.AutoMigrate(&Proxy{}, &BlockedIP{})
-}
-
-func validateConf() {
-	if Config.Sys.VerifyDuration <= 5 {
-		panic("proxy verify duration (must >5 minute)")
-	}
 }

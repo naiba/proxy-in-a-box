@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -155,7 +154,9 @@ var rootCmd = &cobra.Command{
 		crawler.CleanupStaleProxies()
 
 		c := cron.New(cron.WithSeconds())
-		c.AddFunc("0 "+strconv.Itoa(proxyinabox.Config.Sys.VerifyDuration)+" * * * *", crawler.Verify)
+		// BUG-FIX: Verify() 只是轻量地查询过期代理并投递到 worker channel，高频调度不会造成资源压力。
+		// 每 5 分钟拉取一次，确保过期代理能及时被重新验证
+		c.AddFunc("@every 5m", crawler.Verify)
 		// 每天凌晨清理超过 6 个月未验证的陈旧代理记录
 		c.AddFunc("0 0 3 * * *", crawler.CleanupStaleProxies)
 		c.Start()

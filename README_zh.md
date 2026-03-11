@@ -85,7 +85,6 @@ sys:
   proxy_verify_worker: 20    # 并发验证工作线程数
   domains_per_ip: 30         # 30 分钟内每个 IP 可访问的最大域名数
   request_limit_per_ip: 10   # 每秒每个 IP 的最大请求数
-  verify_duration: 30        # 代理重新验证间隔（分钟）
 
 # HTTPS 中间人解密（默认关闭）
 # 开启后代理会用自签 CA 解密 HTTPS 流量，客户端需关闭 TLS 验证或信任该 CA
