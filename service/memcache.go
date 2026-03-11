@@ -372,6 +372,19 @@ func (c *MemCache) RemoveFromCache(p proxyinabox.Proxy) {
 	}
 }
 
+// UpdateProxyFields 更新内存缓存中指定代理的 Delay 和 LastVerify 字段
+func (c *MemCache) UpdateProxyFields(p proxyinabox.Proxy) {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+	for _, e := range c.proxies.pl {
+		if e.p.IP == p.IP {
+			e.p.Delay = p.Delay
+			e.p.LastVerify = p.LastVerify
+			return
+		}
+	}
+}
+
 // GetAllProxies 返回代理池中所有代理的快照副本（用于 dashboard 展示）
 func (c *MemCache) GetAllProxies() []proxyinabox.Proxy {
 	c.proxies.l.Lock()

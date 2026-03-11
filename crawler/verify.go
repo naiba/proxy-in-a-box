@@ -73,6 +73,11 @@ func getDelay(pc chan proxyinabox.Proxy) {
 			continue
 		}
 		ClearProxyFailure(p.IP)
-		proxyinabox.DB.Model(&p).Updates(map[string]interface{}{"delay": delay, "last_verify": time.Now()})
+		now := time.Now()
+		proxyinabox.DB.Model(&p).Updates(map[string]interface{}{"delay": delay, "last_verify": now})
+		// BUG-FIX: 数据库更新后必须同步内存缓存，否则 dashboard 展示的 LastVerify 永远停留在初始加载时的值
+		p.Delay = delay
+		p.LastVerify = now
+		proxyinabox.CI.UpdateProxyFields(p)
 	}
 }

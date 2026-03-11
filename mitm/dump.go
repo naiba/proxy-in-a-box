@@ -43,7 +43,8 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		ch <- true
 	}()
 
-	remoteResponse, upstreamProto, err = m.replayRequest(clientRequest)
+	var selectedProxyURI string
+	remoteResponse, upstreamProto, selectedProxyURI, err = m.replayRequest(clientRequest)
 	if err != nil {
 		fmt.Println("[MITM]", "remoteResponse", "[❎]", err)
 		return
@@ -51,6 +52,15 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 
 	if upstreamProto != "" {
 		GlobalUpstreamStats.Get(upstreamProto).TotalRequests.Add(1)
+	}
+
+	// BUG-FIX: 上游代理返回 407（需要认证）或 403（禁止访问）说明代理本身不可用，
+	// 应触发失败记录并从缓存移除，避免持续分配给后续请求
+	if remoteResponse.StatusCode == http.StatusProxyAuthRequired || remoteResponse.StatusCode == http.StatusForbidden {
+		if m.OnProxyFailure != nil {
+			m.OnProxyFailure(selectedProxyURI)
+		}
+		fmt.Printf("[MITM] upstream proxy [⚠️] %s returned %d, marking as failed\n", selectedProxyURI, remoteResponse.StatusCode)
 	}
 
 	remoteResponseDump, err = httputil.DumpResponse(remoteResponse, true)
@@ -108,18 +118,17 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	<-ch
 }
 
-func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, upstreamProtocol string, err error) {
+func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, upstreamProtocol string, proxyURI string, err error) {
 	transport := http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	var proxy string
-	proxy, err = m.Scheduler(clientRequest)
+	proxyURI, err = m.Scheduler(clientRequest)
 	if err != nil {
 		fmt.Println("[MITM]", "proxy scheduler", "[❎]", err)
 		return
 	}
 	var p *url.URL
-	p, err = url.Parse(proxy)
+	p, err = url.Parse(proxyURI)
 	if err != nil {
 		fmt.Println("[MITM]", "proxy parse", "[❎]", err)
 		return

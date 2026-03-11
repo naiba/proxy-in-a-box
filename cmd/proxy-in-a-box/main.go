@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -310,6 +311,15 @@ func newMITM() *mitm.MITM {
 				return fmt.Errorf("%s", "请求域名过多")
 			}
 			return nil
+		},
+		OnProxyFailure: func(proxyURI string) {
+			u, err := url.Parse(proxyURI)
+			if err != nil || u.Hostname() == "" {
+				return
+			}
+			ip := u.Hostname()
+			crawler.RecordProxyFailure(ip)
+			proxyinabox.CI.RemoveFromCache(proxyinabox.Proxy{IP: ip})
 		},
 	}
 	if proxyinabox.Config.EnableMITM {

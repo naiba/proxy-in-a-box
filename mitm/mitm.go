@@ -38,8 +38,9 @@ type MITM struct {
 	TLSConf     *TLSConfig
 	Print       bool //打印请求详情
 
-	Scheduler func(req *http.Request) (proxy string, err error) //代理调度 func
-	Filter    func(req *http.Request) error                     //请求鉴权、清洗、限流
+	Scheduler      func(req *http.Request) (proxy string, err error) //代理调度 func
+	Filter         func(req *http.Request) error                     //请求鉴权、清洗、限流
+	OnProxyFailure func(proxyURI string)                             //上游代理不可用时的回调（如 407 需要认证）
 
 	cache       *cache.Cache
 	pk          *rsa.PrivateKey
