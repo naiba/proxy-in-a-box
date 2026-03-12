@@ -233,25 +233,35 @@ var rootCmd = &cobra.Command{
 		// API: 全量代理列表
 		managerHttpServer.HandleFunc("/api/proxies", func(w http.ResponseWriter, r *http.Request) {
 			proxies := proxyinabox.CI.GetAllProxies()
+
+			var blockedIPs []proxyinabox.BlockedIP
+			proxyinabox.DB.Find(&blockedIPs)
+			failuresByIP := make(map[string]int, len(blockedIPs))
+			for _, b := range blockedIPs {
+				failuresByIP[b.IP] = b.ConsecutiveFailures
+			}
+
 			type proxyJSON struct {
-				IP         string `json:"ip"`
-				Port       string `json:"port"`
-				Protocol   string `json:"protocol"`
-				Country    string `json:"country"`
-				Source     string `json:"source"`
-				Delay      int64  `json:"delay"`
-				LastVerify string `json:"last_verify"`
+				IP                  string `json:"ip"`
+				Port                string `json:"port"`
+				Protocol            string `json:"protocol"`
+				Country             string `json:"country"`
+				Source              string `json:"source"`
+				Delay               int64  `json:"delay"`
+				LastVerify          string `json:"last_verify"`
+				ConsecutiveFailures int    `json:"consecutive_failures"`
 			}
 			result := make([]proxyJSON, len(proxies))
 			for i, p := range proxies {
 				result[i] = proxyJSON{
-					IP:         p.IP,
-					Port:       p.Port,
-					Protocol:   p.Protocol,
-					Country:    p.Country,
-					Source:     p.Source,
-					Delay:      p.Delay,
-					LastVerify: p.LastVerify.Format("2006-01-02T15:04:05Z"),
+					IP:                  p.IP,
+					Port:                p.Port,
+					Protocol:            p.Protocol,
+					Country:             p.Country,
+					Source:              p.Source,
+					Delay:               p.Delay,
+					LastVerify:          p.LastVerify.Format("2006-01-02T15:04:05Z"),
+					ConsecutiveFailures: failuresByIP[p.IP],
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")

@@ -51,19 +51,25 @@ func IsIPLocked(ip string) bool {
 	return false
 }
 
-// RecordProxyFailure 按 IP 记录验证失败，达到阈值后锁定该 IP 下所有端口
-func RecordProxyFailure(ip string) {
+// RecordProxyFailure 按 IP 记录验证失败，达到阈值后锁定该 IP 下所有端口。
+// 返回 true 表示触发了锁定，调用方应删除该 IP 的 proxy 记录。
+func RecordProxyFailure(ip string) bool {
 	var b proxyinabox.BlockedIP
 	if err := proxyinabox.DB.Where("ip = ?", ip).First(&b).Error; err != nil {
 		b = proxyinabox.BlockedIP{IP: ip}
 	}
 	b.ConsecutiveFailures++
-	if b.ConsecutiveFailures >= proxyFailureLockThreshold {
+	locked := b.ConsecutiveFailures >= proxyFailureLockThreshold
+	if locked {
 		b.LockedUntil = time.Now().Add(proxyFailureLockDuration)
 		lockedIPs.Store(ip, b.LockedUntil)
+		// BUG-FIX: 锁定时同时从 proxies 表删除该 IP 的所有记录，避免无用记录长期残留。
+		// 解锁后源站会重新抓取到该代理，首次验证成功时重新写入 proxies 表。
+		proxyinabox.DB.Unscoped().Where("ip = ?", ip).Delete(&proxyinabox.Proxy{})
 		fmt.Printf("[PIAB] IP [🔒] %s locked for 15 days after %d consecutive failures\n", ip, b.ConsecutiveFailures)
 	}
 	proxyinabox.DB.Save(&b)
+	return locked
 }
 
 // ClearProxyFailure 验证成功时清除该 IP 的失败记录

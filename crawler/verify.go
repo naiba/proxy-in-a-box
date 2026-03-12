@@ -36,7 +36,13 @@ func Init() {
 func Verify() {
 	list, _ := proxyServiceInstance.GetUnVerified()
 	for _, p := range list {
-		verifyJob <- p
+		// BUG-FIX: 非阻塞发送，channel 满时跳过剩余代理，避免 Verify() 长时间阻塞导致 cron 调度堆积，
+		// 未被处理的代理会在下一轮 Verify() 中被重新选中
+		select {
+		case verifyJob <- p:
+		default:
+			return
+		}
 	}
 }
 
@@ -68,8 +74,13 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		}
 		delay := time.Now().Unix() - start
 		if err != nil || trace.IP != p.IP {
-			RecordProxyFailure(p.IP)
+			locked := RecordProxyFailure(p.IP)
 			proxyinabox.CI.RemoveFromCache(p)
+			if !locked {
+				// BUG-FIX: 未锁定时更新 last_verify，防止失败代理反复被 GetUnVerified() 选中挤占 verify worker。
+				// 锁定时 RecordProxyFailure 已删除 proxies 记录，无需更新。
+				proxyinabox.DB.Model(&p).Update("last_verify", time.Now())
+			}
 			continue
 		}
 		ClearProxyFailure(p.IP)

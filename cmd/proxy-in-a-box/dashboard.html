@@ -124,6 +124,7 @@ tr:hover td{background:#ffffff06}
       <th data-col="source">Source<span class="sort-arrow">▲</span></th>
       <th data-col="delay">Delay<span class="sort-arrow">▲</span></th>
       <th data-col="last_verify">Verified<span class="sort-arrow">▲</span></th>
+      <th data-col="consecutive_failures">Failures<span class="sort-arrow">▲</span></th>
     </tr></thead><tbody id="proxiesBody"></tbody></table>
   </div></div>
   <div class="footer" id="versionFooter">Proxy-in-a-Box</div>
@@ -259,7 +260,7 @@ tr:hover td{background:#ffffff06}
   function sortProxies(){
     proxiesData.sort(function(a,b){
       var va=a[sortCol],vb=b[sortCol];
-      if(sortCol==='delay'){va=Number(va)||0;vb=Number(vb)||0}
+      if(sortCol==='delay'||sortCol==='consecutive_failures'){va=Number(va)||0;vb=Number(vb)||0}
       else if(sortCol==='last_verify'){va=new Date(va||0).getTime();vb=new Date(vb||0).getTime()}
       else{va=String(va||'').toLowerCase();vb=String(vb||'').toLowerCase()}
       if(va<vb)return sortAsc?-1:1;
@@ -271,10 +272,11 @@ tr:hover td{background:#ffffff06}
   function renderProxies(){
     sortProxies();
     var tb=document.getElementById('proxiesBody'),html='';
-    if(!proxiesData.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--text-dim);text-align:center;padding:20px">No proxies in pool</td></tr>';return}
+    if(!proxiesData.length){tb.innerHTML='<tr><td colspan="8" style="color:var(--text-dim);text-align:center;padding:20px">No proxies in pool</td></tr>';return}
     for(var i=0;i<proxiesData.length;i++){
-      var p=proxiesData[i],proto=(p.protocol||'http').toLowerCase();
-      html+='<tr><td>'+p.ip+'</td><td>'+p.port+'</td><td><span class="proto-badge '+protoClass(proto)+'">'+proto+'</span></td><td>'+(p.country||'—')+'</td><td>'+p.source+'</td><td>'+(p.delay||0)+'ms</td><td>'+relTime(p.last_verify)+'</td></tr>';
+      var p=proxiesData[i],proto=(p.protocol||'http').toLowerCase(),f=p.consecutive_failures||0;
+      var fStyle=f>=3?'color:var(--red);font-weight:700':f>0?'color:var(--orange)':'color:var(--text-dim)';
+      html+='<tr><td>'+p.ip+'</td><td>'+p.port+'</td><td><span class="proto-badge '+protoClass(proto)+'">'+proto+'</span></td><td>'+(p.country||'—')+'</td><td>'+p.source+'</td><td>'+(p.delay||0)+'ms</td><td>'+relTime(p.last_verify)+'</td><td style="'+fStyle+'">'+f+'</td></tr>';
     }
     tb.innerHTML=html;
     // update sort headers
