@@ -328,9 +328,7 @@ func newMITM() *mitm.MITM {
 			if err != nil || u.Hostname() == "" {
 				return
 			}
-			ip := u.Hostname()
-			crawler.RecordProxyFailure(ip)
-			proxyinabox.CI.RemoveFromCache(proxyinabox.Proxy{IP: ip})
+			proxyinabox.CI.RecordFailure(u.Hostname())
 		},
 	}
 	if proxyinabox.Config.EnableMITM {

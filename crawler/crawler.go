@@ -16,67 +16,8 @@ import (
 	xproxy "golang.org/x/net/proxy"
 )
 
-// ValidateJobs is the channel for sending proxies to validation workers
 var ValidateJobs chan proxyinabox.Proxy
 var pendingValidate sync.Map
-
-const (
-	proxyFailureLockThreshold = 3
-	proxyFailureLockDuration  = 15 * 24 * time.Hour
-)
-
-// lockedIPs 内存缓存锁定的 IP，key 为 IP 地址，value 为解锁时间
-var lockedIPs sync.Map
-
-// LoadLockedIPs 启动时从数据库加载锁定状态到内存
-func LoadLockedIPs() {
-	var blocked []proxyinabox.BlockedIP
-	proxyinabox.DB.Where("locked_until > ?", time.Now()).Find(&blocked)
-	for _, b := range blocked {
-		lockedIPs.Store(b.IP, b.LockedUntil)
-	}
-	if len(blocked) > 0 {
-		fmt.Printf("[PIAB] loaded %d locked IPs from database\n", len(blocked))
-	}
-}
-
-// IsIPLocked 检查 IP 是否在锁定期内
-func IsIPLocked(ip string) bool {
-	if v, ok := lockedIPs.Load(ip); ok {
-		if time.Now().Before(v.(time.Time)) {
-			return true
-		}
-		lockedIPs.Delete(ip)
-	}
-	return false
-}
-
-// RecordProxyFailure 按 IP 记录验证失败，达到阈值后锁定该 IP 下所有端口。
-// 返回 true 表示触发了锁定，调用方应删除该 IP 的 proxy 记录。
-func RecordProxyFailure(ip string) bool {
-	var b proxyinabox.BlockedIP
-	if err := proxyinabox.DB.Where("ip = ?", ip).First(&b).Error; err != nil {
-		b = proxyinabox.BlockedIP{IP: ip}
-	}
-	b.ConsecutiveFailures++
-	locked := b.ConsecutiveFailures >= proxyFailureLockThreshold
-	if locked {
-		b.LockedUntil = time.Now().Add(proxyFailureLockDuration)
-		lockedIPs.Store(ip, b.LockedUntil)
-		// BUG-FIX: 锁定时同时从 proxies 表删除该 IP 的所有记录，避免无用记录长期残留。
-		// 解锁后源站会重新抓取到该代理，首次验证成功时重新写入 proxies 表。
-		proxyinabox.DB.Unscoped().Where("ip = ?", ip).Delete(&proxyinabox.Proxy{})
-		fmt.Printf("[PIAB] IP [🔒] %s locked for 15 days after %d consecutive failures\n", ip, b.ConsecutiveFailures)
-	}
-	proxyinabox.DB.Save(&b)
-	return locked
-}
-
-// ClearProxyFailure 验证成功时清除该 IP 的失败记录
-func ClearProxyFailure(ip string) {
-	lockedIPs.Delete(ip)
-	proxyinabox.DB.Where("ip = ?", ip).Delete(&proxyinabox.BlockedIP{})
-}
 
 // cloudflareTraceResult 表示 Cloudflare cdn-cgi/trace 端点的解析结果
 type cloudflareTraceResult struct {
@@ -138,7 +79,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 		p.IP = strings.TrimSpace(p.IP)
 		proxy := p.URI()
 
-		if IsIPLocked(p.IP) {
+		if proxyinabox.CI.IsIPLocked(p.IP) {
 			continue
 		}
 
@@ -158,7 +99,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 				p.Delay = time.Now().Unix() - start
 				p.LastVerify = time.Now()
 
-				if e := proxyinabox.CI.SaveProxy(p); e == nil {
+				if e := proxyinabox.CI.UpsertProxy(p); e == nil {
 					if proxyinabox.Config.Debug {
 						fmt.Println("[PIAB]", "crawler", "[✅]", id, "find a available proxy", p)
 					}
