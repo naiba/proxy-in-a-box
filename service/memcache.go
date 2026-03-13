@@ -343,6 +343,12 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 		return fmt.Errorf("ip %s is locked, rejecting upsert", p.IP)
 	}
 
+	// BUG-FIX: 先查 DB 中是否已有相同 (IP, Port, Protocol) 的记录。
+	// 若有则复用其主键以触发 UPDATE 而非 INSERT，避免 uniqueIndex 冲突。
+	var existing proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ? AND port = ? AND protocol = ?", p.IP, p.Port, p.Protocol).First(&existing).Error; err == nil {
+		p.Model = existing.Model
+	}
 	if e := proxyinabox.DB.Save(&p).Error; e != nil {
 		return e
 	}
@@ -365,10 +371,15 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	defer c.proxies.l.Unlock()
 
 	c.clearFailureLocked(p.IP)
-	proxyinabox.DB.Model(&p).Updates(map[string]interface{}{"delay": delay, "last_verify": verifyTime})
+	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
+	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{"delay": delay, "last_verify": verifyTime})
 
+	// BUG-FIX: 按 URI 精确匹配内存 entry，而非按 IP 匹配后 early return。
+	// 旧逻辑按 IP 匹配找到第一个就 return，同 IP 不同端口的其他 entry 的
+	// LastVerify 永远不会被更新，导致 dashboard 显示超过 2h 未验证的代理。
+	uri := p.URI()
 	for _, e := range c.proxies.pl {
-		if e.p.IP == p.IP {
+		if e.p.URI() == uri {
 			e.p.Delay = delay
 			e.p.LastVerify = verifyTime
 			return
@@ -380,8 +391,11 @@ func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 
-	c.removeFromCacheLocked(p.IP)
-	proxyinabox.DB.Model(&p).Update("last_verify", time.Now())
+	// BUG-FIX: 只移除验证失败的特定代理（按 URI），而非同 IP 的所有端口。
+	// 旧逻辑 removeFromCacheLocked(ip) 会误删同 IP 其他正常端口的代理。
+	c.removeByURIFromCacheLocked(p.URI())
+	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
+	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Update("last_verify", time.Now())
 }
 
 func (c *MemCache) RecordFailure(ip string) bool {
@@ -459,13 +473,22 @@ func (c *MemCache) CleanupStaleProxies(threshold time.Duration) {
 
 // --- 内部方法 ---
 
-// removeFromCacheLocked 调用方必须已持有 c.proxies.l 锁
+// removeFromCacheLocked 删除该 IP 的所有代理，调用方必须已持有 c.proxies.l 锁
 func (c *MemCache) removeFromCacheLocked(ip string) {
-	// BUG-FIX: 必须删除该 IP 的所有代理（可能有多个端口），而不是仅删除第一个
 	for i := len(c.proxies.pl) - 1; i >= 0; i-- {
 		e := c.proxies.pl[i]
 		if e.p.IP == ip {
 			delete(c.proxies.index, e.p.URI())
+			c.proxies.pl = append(c.proxies.pl[:i], c.proxies.pl[i+1:]...)
+		}
+	}
+}
+
+// removeByURIFromCacheLocked 只删除特定 URI 的代理，调用方必须已持有 c.proxies.l 锁
+func (c *MemCache) removeByURIFromCacheLocked(uri string) {
+	for i := len(c.proxies.pl) - 1; i >= 0; i-- {
+		if c.proxies.pl[i].p.URI() == uri {
+			delete(c.proxies.index, uri)
 			c.proxies.pl = append(c.proxies.pl[:i], c.proxies.pl[i+1:]...)
 		}
 	}
