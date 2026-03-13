@@ -100,6 +100,13 @@ func NewMemCache() *MemCache {
 }
 
 func (c *MemCache) load() {
+	// BUG-FIX: 启动时将旧数据中空 protocol 统一为 "http"，保证 uniqueIndex 一致性。
+	// 同时删除因旧版缺少唯一约束而产生的重复 (IP, Port, Protocol) 记录，只保留最新的。
+	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("protocol = '' OR protocol IS NULL").Update("protocol", "http")
+	proxyinabox.DB.Exec(`DELETE FROM proxies WHERE id NOT IN (
+		SELECT MAX(id) FROM proxies WHERE deleted_at IS NULL GROUP BY ip, port, protocol
+	) AND deleted_at IS NULL`)
+
 	var ps []proxyinabox.Proxy
 	err := proxyinabox.DB.Where("ip NOT IN (?)",
 		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),
@@ -341,6 +348,12 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 	// 确保 IsIPLocked 和 DB.Save 之间的时间窗口内不会被其他 goroutine 锁定。
 	if c.IsIPLocked(p.IP) {
 		return fmt.Errorf("ip %s is locked, rejecting upsert", p.IP)
+	}
+
+	// BUG-FIX: 空 protocol 统一为 "http"，否则 uniqueIndex 会将 "" 和 "http"
+	// 视为不同值，导致同一 endpoint 在 DB 中产生重复记录。
+	if p.Protocol == "" {
+		p.Protocol = "http"
 	}
 
 	// BUG-FIX: 先查 DB 中是否已有相同 (IP, Port, Protocol) 的记录。
