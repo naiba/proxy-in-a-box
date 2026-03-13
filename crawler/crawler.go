@@ -83,9 +83,9 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			continue
 		}
 
-		_, has := pendingValidate.Load(proxy)
-		if !has && !proxyinabox.CI.HasProxy(p.URI()) {
-			pendingValidate.Store(proxy, nil)
+		// BUG-FIX: 使用 LoadOrStore 原子操作，防止多个 validator 同时验证同一代理
+		_, loaded := pendingValidate.LoadOrStore(proxy, nil)
+		if !loaded && !proxyinabox.CI.HasProxy(p.URI()) {
 			start := time.Now().Unix()
 
 			body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*7, proxy, 3)

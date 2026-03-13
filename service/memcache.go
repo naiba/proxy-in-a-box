@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -20,6 +21,16 @@ const (
 type proxyEntry struct {
 	p *proxyinabox.Proxy
 	n int64
+}
+
+// atomicAddN 原子增加 n 字段，防止并发竞态
+func (e *proxyEntry) atomicAddN(delta int64) int64 {
+	return atomic.AddInt64(&e.n, delta)
+}
+
+// getN 原子读取 n 字段
+func (e *proxyEntry) getN() int64 {
+	return atomic.LoadInt64(&e.n)
 }
 
 type sortableProxyList []*proxyEntry
@@ -141,13 +152,21 @@ func (c *MemCache) gc(dur time.Duration) {
 			c.ips.l.Unlock()
 			now = time.Now().Unix()
 			c.domains.l.Lock()
+			// BUG-FIX: 使用倒序遍历删除切片元素，避免索引错位导致某些记录未清理
 			for k, v := range c.domains.dl {
+				toDelete := make([]int, 0)
 				for i, v1 := range v {
 					if now-v1.n > 3 {
-						c.domains.dl[k] = append(v[:i], v[i+1:]...)
+						toDelete = append(toDelete, i)
 					}
 				}
-				if len(v) == 0 {
+				// 倒序删除，避免索引问题
+				for i := len(toDelete) - 1; i >= 0; i-- {
+					idx := toDelete[i]
+					c.domains.dl[k] = append(v[:idx], v[idx+1:]...)
+					num++
+				}
+				if len(c.domains.dl[k]) == 0 {
 					delete(c.domains.dl, k)
 					num++
 				}
@@ -190,6 +209,8 @@ func (c *MemCache) ProxyLength() int {
 }
 
 func (c *MemCache) HasProxy(proxy string) bool {
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
 	_, has := c.proxies.index[proxy]
 	return has
 }
@@ -216,15 +237,23 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	}
 
 	candidate := make(map[string]struct{})
-	sort.Sort(sortableProxyList(c.proxies.pl))
+	// BUG-FIX: 使用副本排序，不修改原数组，避免破坏 GetProxy 的轮询顺序
+	sortedList := make(sortableProxyList, len(c.proxies.pl))
+	copy(sortedList, c.proxies.pl)
+	sort.Sort(sortedList)
 	c.domains.l.Lock()
 	defer c.domains.l.Unlock()
 	if pl, has := c.domains.dl[domain]; has {
-		sort.Sort(sortableProxyList(pl))
-		for i := 0; i < len(pl); i++ {
-			if now-pl[i].n < 3 {
-				candidate[pl[i].p.IP] = struct{}{}
+		// BUG-FIX: 同样使用副本排序域名列表
+		sortedDomainList := make(sortableProxyList, len(pl))
+		copy(sortedDomainList, pl)
+		sort.Sort(sortedDomainList)
+		for i := 0; i < len(sortedDomainList); i++ {
+			// BUG-FIX: 使用原子操作读取 n 字段
+			if now-sortedDomainList[i].getN() < 3 {
+				candidate[sortedDomainList[i].p.IP] = struct{}{}
 			} else {
+				// 删除过期记录
 				c.domains.dl[domain] = append(pl[:i], pl[i+1:]...)
 			}
 		}
@@ -237,7 +266,8 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 				p: c.proxies.pl[i].p,
 				n: now,
 			})
-			c.proxies.pl[i].n++
+			// BUG-FIX: 使用原子操作增加 n 字段，防止并发竞态
+			c.proxies.pl[i].atomicAddN(1)
 			fmt.Println("[PIAB]", "proxy scheduling", "[✅]", req.Host, "-->", c.proxies.pl[i].p.URI())
 			return c.proxies.pl[i].p.URI(), nil
 		}
@@ -256,7 +286,8 @@ func (c *MemCache) IPLimiter(req *http.Request) bool {
 	entry, has := c.ips.list[ip]
 	if has {
 		if now == entry.lastActive {
-			if entry.num > proxyinabox.Config.Sys.RequestLimitPerIP {
+			// BUG-FIX: 使用 >= 而非 >，确保只允许 limit 个请求，而不是 limit+1
+			if entry.num >= proxyinabox.Config.Sys.RequestLimitPerIP {
 				return false
 			}
 			entry.num++
@@ -303,21 +334,29 @@ func (c *MemCache) HostLimiter(req *http.Request) bool {
 // --- 代理生命周期 ---
 
 func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
-	// BUG-FIX: 新抓取的代理入库前必须检查锁定状态。被锁定的 IP 说明近期连续验证失败，
-	// 即使源站重新抓到也不应入库，更不应清除锁定记录，必须等锁定自然过期。
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+
+	// BUG-FIX: 持锁下检查锁定状态，防止 TOCTOU 竞态。必须在锁内检查，
+	// 确保 IsIPLocked 和 DB.Save 之间的时间窗口内不会被其他 goroutine 锁定。
 	if c.IsIPLocked(p.IP) {
 		return fmt.Errorf("ip %s is locked, rejecting upsert", p.IP)
 	}
 
-	c.proxies.l.Lock()
-	defer c.proxies.l.Unlock()
-
 	if e := proxyinabox.DB.Save(&p).Error; e != nil {
 		return e
 	}
-	c.removeFromCacheLocked(p.IP)
+	// BUG-FIX: 只删除相同 URI 的代理，不删除同 IP 的其他端口代理，
+	// 避免同一 IP 的多端口代理被误删。
+	uri := p.URI()
+	for i := len(c.proxies.pl) - 1; i >= 0; i-- {
+		if c.proxies.pl[i].p.URI() == uri {
+			delete(c.proxies.index, uri)
+			c.proxies.pl = append(c.proxies.pl[:i], c.proxies.pl[i+1:]...)
+		}
+	}
 	c.proxies.pl = append(c.proxies.pl, &proxyEntry{p: &p, n: 0})
-	c.proxies.index[p.URI()] = struct{}{}
+	c.proxies.index[uri] = struct{}{}
 	return nil
 }
 
@@ -422,11 +461,12 @@ func (c *MemCache) CleanupStaleProxies(threshold time.Duration) {
 
 // removeFromCacheLocked 调用方必须已持有 c.proxies.l 锁
 func (c *MemCache) removeFromCacheLocked(ip string) {
-	for i, e := range c.proxies.pl {
+	// BUG-FIX: 必须删除该 IP 的所有代理（可能有多个端口），而不是仅删除第一个
+	for i := len(c.proxies.pl) - 1; i >= 0; i-- {
+		e := c.proxies.pl[i]
 		if e.p.IP == ip {
 			delete(c.proxies.index, e.p.URI())
 			c.proxies.pl = append(c.proxies.pl[:i], c.proxies.pl[i+1:]...)
-			return
 		}
 	}
 }

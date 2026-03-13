@@ -31,11 +31,8 @@ func Init() {
 func Verify() {
 	list, _ := proxyServiceInstance.GetUnVerified()
 	for _, p := range list {
-		select {
-		case verifyJob <- p:
-		default:
-			return
-		}
+		// BUG-FIX: 阻塞投递确保所有过期代理都被验证，避免 channel 满时直接 return 导致部分代理被跳过
+		verifyJob <- p
 	}
 }
 
