@@ -64,6 +64,7 @@ type MemCache struct {
 	ips         *ipActivity
 	domainLimit *domainActivityList
 	lockedIPs   sync.Map
+	failureMu   sync.Mutex
 }
 
 func NewMemCache() *MemCache {
@@ -302,10 +303,15 @@ func (c *MemCache) HostLimiter(req *http.Request) bool {
 // --- 代理生命周期 ---
 
 func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
+	// BUG-FIX: 新抓取的代理入库前必须检查锁定状态。被锁定的 IP 说明近期连续验证失败，
+	// 即使源站重新抓到也不应入库，更不应清除锁定记录，必须等锁定自然过期。
+	if c.IsIPLocked(p.IP) {
+		return fmt.Errorf("ip %s is locked, rejecting upsert", p.IP)
+	}
+
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 
-	c.clearFailureLocked(p.IP)
 	if e := proxyinabox.DB.Save(&p).Error; e != nil {
 		return e
 	}
@@ -340,6 +346,11 @@ func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
 }
 
 func (c *MemCache) RecordFailure(ip string) bool {
+	// BUG-FIX: 必须对同一 IP 的 read-modify-write 操作加锁，防止多个 goroutine
+	// 并发读取相同的 ConsecutiveFailures 值各自 +1 写回，导致计数丢失或重复触发锁定。
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
 	var b proxyinabox.BlockedIP
 	if err := proxyinabox.DB.Where("ip = ?", ip).First(&b).Error; err != nil {
 		b = proxyinabox.BlockedIP{IP: ip}

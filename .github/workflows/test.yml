@@ -26,5 +26,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test -v -race -cover ./...
+
       - name: Build
         run: go build -o bin/proxy-in-a-box ./cmd/proxy-in-a-box

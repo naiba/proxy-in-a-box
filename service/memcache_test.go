@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,7 +99,37 @@ func TestUpsertProxy_DuplicateIP_NoGhostEntry(t *testing.T) {
 	}
 }
 
-func TestUpsertProxy_ClearsOldFailureRecord(t *testing.T) {
+func TestUpsertProxy_RejectsLockedIP(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	proxyinabox.DB.Create(&proxyinabox.BlockedIP{
+		IP:                  "5.6.7.8",
+		ConsecutiveFailures: 5,
+		LockedUntil:         time.Now().Add(24 * time.Hour),
+	})
+	c.LoadLockedIPs()
+
+	p := proxyinabox.Proxy{
+		IP: "5.6.7.8", Port: "1080", Protocol: "socks5",
+		Source: "test", LastVerify: time.Now(),
+	}
+	if err := c.UpsertProxy(p); err == nil {
+		t.Fatal("UpsertProxy should reject locked IP")
+	}
+
+	if c.ProxyLength() != 0 {
+		t.Errorf("ProxyLength = %d, want 0 (locked IP should not be added)", c.ProxyLength())
+	}
+
+	var count int64
+	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", "5.6.7.8").Count(&count)
+	if count != 1 {
+		t.Errorf("blocked_ips count = %d, want 1 (UpsertProxy should NOT clear lock)", count)
+	}
+}
+
+func TestUpsertProxy_AllowsExpiredLockIP(t *testing.T) {
 	setupTestDB(t)
 	c := newTestCache(t)
 
@@ -115,17 +147,11 @@ func TestUpsertProxy_ClearsOldFailureRecord(t *testing.T) {
 		t.Fatalf("UpsertProxy failed: %v", err)
 	}
 
-	var count int64
-	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", "5.6.7.8").Count(&count)
-	if count != 0 {
-		t.Errorf("blocked_ips count = %d, want 0 (UpsertProxy should clear old failures)", count)
-	}
-
 	if c.ProxyLength() != 1 {
 		t.Errorf("ProxyLength = %d, want 1", c.ProxyLength())
 	}
 	if !c.HasProxy("socks5://5.6.7.8:1080") {
-		t.Error("proxy should be in cache after UpsertProxy")
+		t.Error("proxy should be in cache after UpsertProxy with expired lock")
 	}
 }
 
@@ -271,7 +297,7 @@ func TestRecordFailure_AtThreshold_DeletesDBAndCache(t *testing.T) {
 	}
 }
 
-func TestRecordFailure_ClearedByUpsertProxy(t *testing.T) {
+func TestRecordFailure_NotClearedByUpsertProxy(t *testing.T) {
 	setupTestDB(t)
 	c := newTestCache(t)
 
@@ -279,21 +305,24 @@ func TestRecordFailure_ClearedByUpsertProxy(t *testing.T) {
 		c.RecordFailure("10.0.0.1")
 	}
 	if !c.IsIPLocked("10.0.0.1") {
-		t.Fatal("IP should be locked before UpsertProxy")
+		t.Fatal("IP should be locked after reaching threshold")
 	}
 
-	c.UpsertProxy(proxyinabox.Proxy{
+	err := c.UpsertProxy(proxyinabox.Proxy{
 		IP: "10.0.0.1", Port: "8080", Protocol: "http",
 		Source: "test", LastVerify: time.Now(),
 	})
 
-	if c.IsIPLocked("10.0.0.1") {
-		t.Error("IP should not be locked after UpsertProxy")
+	if err == nil {
+		t.Error("UpsertProxy should reject locked IP")
+	}
+	if !c.IsIPLocked("10.0.0.1") {
+		t.Error("IP should still be locked after rejected UpsertProxy")
 	}
 	var count int64
 	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", "10.0.0.1").Count(&count)
-	if count != 0 {
-		t.Errorf("blocked_ips count = %d, want 0 after UpsertProxy clears failure", count)
+	if count != 1 {
+		t.Errorf("blocked_ips count = %d, want 1 (lock should not be cleared)", count)
 	}
 }
 
@@ -557,5 +586,116 @@ func TestGetAllProxies(t *testing.T) {
 	}
 	if !ips["1.1.1.1"] || !ips["2.2.2.2"] {
 		t.Errorf("GetAllProxies missing expected IPs, got %v", ips)
+	}
+}
+
+// --- 并发竞态测试 ---
+
+func TestRecordFailure_ConcurrentSameIP(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	c.UpsertProxy(proxyinabox.Proxy{
+		IP: "race.ip", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	})
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			c.RecordFailure("race.ip")
+		}()
+	}
+	wg.Wait()
+
+	var b proxyinabox.BlockedIP
+	proxyinabox.DB.First(&b, "ip = ?", "race.ip")
+	if b.ConsecutiveFailures != goroutines {
+		t.Errorf("ConsecutiveFailures = %d, want %d (race condition detected)", b.ConsecutiveFailures, goroutines)
+	}
+}
+
+func TestRecordFailure_ConcurrentDifferentIPs(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	const numIPs = 10
+	for i := 0; i < numIPs; i++ {
+		c.UpsertProxy(proxyinabox.Proxy{
+			IP: fmt.Sprintf("10.0.0.%d", i), Port: "8080", Protocol: "http",
+			Source: "test", LastVerify: time.Now(),
+		})
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < numIPs; i++ {
+		ip := fmt.Sprintf("10.0.0.%d", i)
+		for j := 0; j < proxyFailureLockThreshold; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.RecordFailure(ip)
+			}()
+		}
+	}
+	wg.Wait()
+
+	for i := 0; i < numIPs; i++ {
+		ip := fmt.Sprintf("10.0.0.%d", i)
+		var b proxyinabox.BlockedIP
+		proxyinabox.DB.First(&b, "ip = ?", ip)
+		if b.ConsecutiveFailures != proxyFailureLockThreshold {
+			t.Errorf("IP %s: ConsecutiveFailures = %d, want %d", ip, b.ConsecutiveFailures, proxyFailureLockThreshold)
+		}
+		if !c.IsIPLocked(ip) {
+			t.Errorf("IP %s should be locked after %d failures", ip, proxyFailureLockThreshold)
+		}
+	}
+
+	if c.ProxyLength() != 0 {
+		t.Errorf("ProxyLength = %d, want 0 (all should be locked)", c.ProxyLength())
+	}
+}
+
+func TestUpsertProxy_ConcurrentWithRecordFailure(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	for i := 0; i < proxyFailureLockThreshold; i++ {
+		c.RecordFailure("locked.ip")
+	}
+	if !c.IsIPLocked("locked.ip") {
+		t.Fatal("IP should be locked")
+	}
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	rejectedCount := 0
+	var mu sync.Mutex
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			err := c.UpsertProxy(proxyinabox.Proxy{
+				IP: "locked.ip", Port: "8080", Protocol: "http",
+				Source: "test", LastVerify: time.Now(),
+			})
+			if err != nil {
+				mu.Lock()
+				rejectedCount++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if rejectedCount != goroutines {
+		t.Errorf("rejected = %d, want %d (all should be rejected for locked IP)", rejectedCount, goroutines)
+	}
+	if c.ProxyLength() != 0 {
+		t.Errorf("ProxyLength = %d, want 0", c.ProxyLength())
 	}
 }
