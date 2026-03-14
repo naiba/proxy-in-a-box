@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,8 +26,19 @@ type cloudflareTraceResult struct {
 	Loc string
 }
 
-// verifyEndpoint 是 HTTPS 端点，HTTP 代理必须支持 CONNECT 隧道才能通过验证
 const verifyEndpoint = "https://blog.cloudflare.com/cdn-cgi/trace"
+
+// tlsHijackProbeHosts 用于检测代理是否选择性劫持 HTTPS 流量。
+// 某些代理对 Cloudflare 等大型 CDN 的 IP 正常透传，但对非 CDN 站点做 MITM
+// 并返回过期/自签名证书。每次验证随机选一个非 CDN 站点做 TLS 握手探测。
+var tlsHijackProbeHosts = []string{
+	"www.google.com:443",
+	"www.apple.com:443",
+	"www.microsoft.com:443",
+	"www.amazon.com:443",
+	"www.wikipedia.org:443",
+	"www.github.com:443",
+}
 
 // parseCloudflareTrace 解析 cdn-cgi/trace 返回的 key=value 纯文本（如 ip=1.2.3.4\nloc=JP\n...）
 func parseCloudflareTrace(body []byte) (cloudflareTraceResult, error) {
@@ -47,6 +59,43 @@ func parseCloudflareTrace(body []byte) (cloudflareTraceResult, error) {
 		return result, fmt.Errorf("cloudflare trace: ip field not found in response")
 	}
 	return result, nil
+}
+
+// probeTLSHijack 通过代理对非 CDN 站点发起 TLS 握手，检测代理是否选择性劫持 HTTPS。
+// 只做握手不做 HTTP 请求，失败说明代理会篡改 TLS 证书。
+func probeTLSHijack(proxyAddr string) error {
+	proxyUrl, err := url.Parse(proxyAddr)
+	if err != nil {
+		return err
+	}
+	dialer, err := xproxy.FromURL(proxyUrl, xproxy.Direct)
+	if err != nil {
+		return err
+	}
+	probeHost := tlsHijackProbeHosts[rand.IntN(len(tlsHijackProbeHosts))]
+	conn, err := dialer.Dial("tcp", probeHost)
+	if err != nil {
+		return err
+	}
+	serverName, _, _ := net.SplitHostPort(probeHost)
+	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = []string{"http/1.1"}
+		}
+	}
+	uconn := utls.UClient(conn, &utls.Config{ServerName: serverName}, utls.HelloCustom)
+	if err := uconn.ApplyPreset(&spec); err != nil {
+		conn.Close()
+		return err
+	}
+	err = uconn.Handshake()
+	uconn.Close()
+	return err
 }
 
 // GetDocFromURL fetches a URL body as string, optionally through a random proxy.
@@ -95,6 +144,14 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			}
 
 			if err == nil && trace.IP == p.IP {
+				// BUG-FIX: 某些代理对 Cloudflare 等 CDN IP 正常透传，但对非 CDN 站点做 MITM
+				// 返回过期/自签名证书。对非 CDN 站做一次 TLS 握手探测，拦截选择性劫持的代理。
+				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+					fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
+					proxyinabox.CI.RecordFailure(p.IP)
+					pendingValidate.Delete(proxy)
+					continue
+				}
 				p.Country = trace.Loc
 				p.Delay = time.Now().Unix() - start
 				p.LastVerify = time.Now()

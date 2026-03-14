@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -55,6 +56,14 @@ func getDelay(pc chan proxyinabox.Proxy) {
 		}
 		delay := time.Now().Unix() - start
 		if err != nil || trace.IP != p.IP {
+			locked := proxyinabox.CI.RecordFailure(p.IP)
+			if !locked {
+				proxyinabox.CI.MarkVerifyFailed(p)
+			}
+			continue
+		}
+		if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+			fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
 			locked := proxyinabox.CI.RecordFailure(p.IP)
 			if !locked {
 				proxyinabox.CI.MarkVerifyFailed(p)
