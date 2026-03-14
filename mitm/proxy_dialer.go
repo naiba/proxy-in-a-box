@@ -11,6 +11,17 @@ import (
 	xproxy "golang.org/x/net/proxy"
 )
 
+// ProxyConnectError 上游代理在 CONNECT 握手阶段返回的非 200 响应，
+// 携带 StatusCode 以便上层区分 407（需要认证）等可识别的失败原因
+type ProxyConnectError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e *ProxyConnectError) Error() string {
+	return fmt.Sprintf("proxy CONNECT returned %s", e.Status)
+}
+
 // httpConnectDialer 通过 HTTP CONNECT 方法建立 TCP 隧道
 type httpConnectDialer struct {
 	proxyAddr string
@@ -42,7 +53,7 @@ func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 	}
 	if resp.StatusCode != 200 {
 		conn.Close()
-		return nil, fmt.Errorf("proxy CONNECT returned %s", resp.Status)
+		return nil, &ProxyConnectError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 
 	return conn, nil

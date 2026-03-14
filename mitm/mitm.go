@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -224,6 +225,15 @@ func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	remoteConn, err := dialer.Dial("tcp", targetAddr)
 	if err != nil {
+		// BUG-FIX: HTTPS 隧道模式下 HTTP CONNECT 握手返回 407/403 时，之前只返回 502
+		// 但不触发 OnProxyFailure，导致需要认证的代理不会被记录失败、无法被拉黑
+		var connectErr *ProxyConnectError
+		if errors.As(err, &connectErr) &&
+			(connectErr.StatusCode == http.StatusProxyAuthRequired || connectErr.StatusCode == http.StatusForbidden) {
+			if m.OnProxyFailure != nil {
+				m.OnProxyFailure(proxyURI)
+			}
+		}
 		GlobalRequestStats.FailedRequests.Add(1)
 		upstreamStats.FailedRequests.Add(1)
 		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial through proxy error: %s", err))
