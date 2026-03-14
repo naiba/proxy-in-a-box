@@ -2,8 +2,6 @@ package crawler
 
 import (
 	"context"
-	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,20 +15,6 @@ import (
 	utls "github.com/refraction-networking/utls"
 	xproxy "golang.org/x/net/proxy"
 )
-
-// TLSHijackError 代理劫持了 HTTPS 流量，返回的 TLS 证书无法通过系统 CA 验证
-// （证书过期、自签名、或颁发者不被信任）。此类代理应当被优先拉黑。
-type TLSHijackError struct {
-	Err error
-}
-
-func (e *TLSHijackError) Error() string {
-	return fmt.Sprintf("tls hijack detected: %v", e.Err)
-}
-
-func (e *TLSHijackError) Unwrap() error {
-	return e.Err
-}
 
 var ValidateJobs chan proxyinabox.Proxy
 var pendingValidate sync.Map
@@ -63,31 +47,6 @@ func parseCloudflareTrace(body []byte) (cloudflareTraceResult, error) {
 		return result, fmt.Errorf("cloudflare trace: ip field not found in response")
 	}
 	return result, nil
-}
-
-func isTLSHijack(err error) bool {
-	var hijackErr *TLSHijackError
-	return errors.As(err, &hijackErr)
-}
-
-func verifyPeerCertificates(peerCerts []*x509.Certificate, serverName string) error {
-	if len(peerCerts) == 0 {
-		return fmt.Errorf("no peer certificates")
-	}
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = x509.NewCertPool()
-	}
-	intermediates := x509.NewCertPool()
-	for _, cert := range peerCerts[1:] {
-		intermediates.AddCert(cert)
-	}
-	_, err = peerCerts[0].Verify(x509.VerifyOptions{
-		DNSName:       serverName,
-		Roots:         roots,
-		Intermediates: intermediates,
-	})
-	return err
 }
 
 // GetDocFromURL fetches a URL body as string, optionally through a random proxy.
@@ -135,12 +94,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 				trace, err = parseCloudflareTrace(body)
 			}
 
-			if err != nil || trace.IP != p.IP {
-				if isTLSHijack(err) {
-					proxyinabox.CI.RecordFailure(p.IP)
-					fmt.Printf("[PIAB] crawler [🔓] %d proxy %s detected TLS hijack, recording failure\n", id, proxy)
-				}
-			} else {
+			if err == nil && trace.IP == p.IP {
 				p.Country = trace.Loc
 				p.Delay = time.Now().Unix() - start
 				p.LastVerify = time.Now()
@@ -229,13 +183,6 @@ func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr stri
 			if err := uconn.Handshake(); err != nil {
 				conn.Close()
 				return nil, err
-			}
-			// BUG-FIX: uTLS 不会自动验证服务端证书（不同于标准 crypto/tls），
-			// 导致劫持 HTTPS 流量的代理（返回过期/自签名证书）无法被检测到。
-			// 手动验证证书链，检测到无效证书时返回 TLSHijackError 以便上层快速拉黑此代理。
-			if err := verifyPeerCertificates(uconn.ConnectionState().PeerCertificates, serverName); err != nil {
-				uconn.Close()
-				return nil, &TLSHijackError{Err: err}
 			}
 			return uconn, nil
 		}
