@@ -229,6 +229,7 @@ func BrowserFetch(targetURL string) (string, error) {
 		}
 		if _, err := startSessionWithProxy(proxyAddr); err != nil {
 			activeSessionMu.Unlock()
+			fmt.Printf("[PIAB] browser [❎] start failed (proxy=%q): %v\n", proxyAddr, err)
 			return "", err
 		}
 	}
@@ -240,14 +241,13 @@ func BrowserFetch(targetURL string) (string, error) {
 	session.mu.Unlock()
 
 	if err != nil && session.proxyAddr != "" {
-		if proxyinabox.Config.Debug {
-			fmt.Printf("[PIAB] browser [⚠️] proxy navigate failed for %s, fallback to direct: %v\n", targetURL, err)
-		}
+		fmt.Printf("[PIAB] browser [⚠️] proxy navigate failed for %s, fallback to direct: %v\n", targetURL, err)
 		activeSessionMu.Lock()
 		destroyActiveSession()
 		fallbackSession, startErr := startSessionWithProxy("")
 		activeSessionMu.Unlock()
 		if startErr != nil {
+			fmt.Printf("[PIAB] browser [❎] fallback direct start failed: %v\n", startErr)
 			return "", fmt.Errorf("fallback direct browser start failed: %w", startErr)
 		}
 
@@ -255,10 +255,12 @@ func BrowserFetch(targetURL string) (string, error) {
 		err = fallbackSession.navigate(targetURL)
 		fallbackSession.mu.Unlock()
 		if err != nil {
+			fmt.Printf("[PIAB] browser [❎] navigate failed (direct fallback) for %s: %v\n", targetURL, err)
 			return "", fmt.Errorf("navigate to %s failed (direct fallback): %w", targetURL, err)
 		}
 		session = fallbackSession
 	} else if err != nil {
+		fmt.Printf("[PIAB] browser [❎] navigate failed for %s: %v\n", targetURL, err)
 		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
 	}
 
@@ -267,6 +269,7 @@ func BrowserFetch(targetURL string) (string, error) {
 	html, err := session.evaluate("document.body.innerHTML")
 	session.mu.Unlock()
 	if err != nil {
+		fmt.Printf("[PIAB] browser [❎] evaluate failed for %s: %v\n", targetURL, err)
 		return "", fmt.Errorf("failed to get rendered HTML: %w", err)
 	}
 
