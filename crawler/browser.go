@@ -56,8 +56,12 @@ func allocateRandomPort() (int, error) {
 
 func (s *BrowserSession) start() error {
 	cfg := proxyinabox.Config.Lightpanda
+	// 默认在 $PATH 中查找 lightpanda，Docker 镜像已将其安装到 /usr/local/bin/
 	if cfg.Bin == "" {
-		return fmt.Errorf("lightpanda not configured (set lightpanda.bin in config)")
+		cfg.Bin = "lightpanda"
+	}
+	if _, err := exec.LookPath(cfg.Bin); err != nil {
+		return fmt.Errorf("lightpanda binary not found: %w (set lightpanda.bin in config or install lightpanda)", err)
 	}
 
 	port, err := allocateRandomPort()
