@@ -47,9 +47,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 
 		body, err := GetDocFromURL(fetchURL, headers...)
 		if err != nil {
-			if proxyinabox.Config.Debug {
-				fmt.Printf("[PIAB] %s [❎] script fetch error: %v\n", src.Name, err)
-			}
+			fmt.Printf("[PIAB] %s [❎] script fetch error: %v\n", src.Name, err)
 			L.Push(lua.LNil)
 			return 1
 		}
@@ -95,9 +93,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 		fetchURL := L.CheckString(1)
 		html, err := BrowserFetch(fetchURL)
 		if err != nil {
-			if proxyinabox.Config.Debug {
-				fmt.Printf("[PIAB] %s [❎] browser_fetch error: %v\n", src.Name, err)
-			}
+			fmt.Printf("[PIAB] %s [❎] browser_fetch error: %v\n", src.Name, err)
 			L.Push(lua.LNil)
 			return 1
 		}
@@ -111,9 +107,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 		expression := L.CheckString(1)
 		result, err := BrowserEval(expression)
 		if err != nil {
-			if proxyinabox.Config.Debug {
-				fmt.Printf("[PIAB] %s [\u274e] browser_eval error: %v\n", src.Name, err)
-			}
+			fmt.Printf("[PIAB] %s [❎] browser_eval error: %v\n", src.Name, err)
 			L.Push(lua.LNil)
 			return 1
 		}
