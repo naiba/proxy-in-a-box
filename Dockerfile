@@ -12,27 +12,16 @@ RUN go build -ldflags="-s -w -X main.version=${VERSION}" -o proxy-in-a-box ./cmd
 FROM alpine:latest
 
 RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
     ca-certificates \
-    ttf-freefont \
     curl \
-    tini
+    tini \
+    && ARCH=$(uname -m | sed 's/aarch64/aarch64/;s/x86_64/x86_64/') \
+    && curl -fsSL -o /usr/local/bin/lightpanda \
+       "https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-${ARCH}-linux" \
+    && chmod +x /usr/local/bin/lightpanda
 
-# 安装 pinchtab 二进制
-ARG TARGETARCH
-RUN ARCH=$(case "${TARGETARCH}" in amd64) echo "amd64";; arm64) echo "arm64";; *) echo "amd64";; esac) && \
-    curl -fsSL -o /usr/local/bin/pinchtab \
-    "https://github.com/pinchtab/pinchtab/releases/latest/download/pinchtab-linux-${ARCH}" && \
-    chmod +x /usr/local/bin/pinchtab
-
-# 复制 proxy-in-a-box 二进制
 COPY --from=builder /build/proxy-in-a-box /usr/local/bin/proxy-in-a-box
 WORKDIR /app
-
-ENV CHROME_BIN=/usr/bin/chromium-browser
 
 EXPOSE 8080 8081 8083
 

@@ -88,7 +88,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 		L.Push(lua.LString(string(data)))
 		return 1
 	}))
-	// inject browser_fetch(url) — fetches a URL using pinchtab headless browser
+	// inject browser_fetch(url) — fetches a URL using lightpanda headless browser
 	// Returns rendered HTML string or nil on error
 	// 使用无头浏览器获取 JS 渲染后的 HTML，比 fetch 慢但能处理 JS 渲染的页面
 	L.SetGlobal("browser_fetch", L.NewFunction(func(L *lua.LState) int {

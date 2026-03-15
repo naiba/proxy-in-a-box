@@ -1,31 +1,39 @@
 package crawler
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 
 	"github.com/naiba/proxyinabox"
 )
 
-// BrowserSession 管理单次浏览器抓取的完整生命周期（pinchtab 进程 + Chrome profile）
-// 每个 runScript 调用创建独立 session，用完即销毁，避免资源泄漏和 cookie/指纹污染
+const (
+	// cdpConnectTimeout 是等待 Lightpanda CDP 服务就绪的最大时间
+	cdpConnectTimeout = 30 * time.Second
+	// pageNavigationTimeout 是单次页面导航+渲染的最大时间
+	pageNavigationTimeout = 60 * time.Second
+	// healthCheckInterval 是轮询 CDP /json/version 的间隔
+	healthCheckInterval = 300 * time.Millisecond
+	// shutdownGracePeriod 是发送 SIGTERM 后等待进程退出的宽限期，超时则 SIGKILL
+	shutdownGracePeriod = 3 * time.Second
+)
+
+// BrowserSession 管理单次浏览器抓取的完整生命周期（lightpanda 进程 + CDP 连接）
+// 每个 runScript 调用创建独立 session，用完即销毁，避免资源泄漏
 type BrowserSession struct {
 	cmd       *exec.Cmd
-	port      string
-	profile   string
-	client    *http.Client
+	port      int
+	browser   *rod.Browser
+	page      *rod.Page
 	proxyAddr string
 	mu        sync.Mutex
 }
@@ -36,24 +44,20 @@ var (
 	activeSessionMu sync.Mutex
 )
 
-func allocateRandomPort() (string, error) {
+func allocateRandomPort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	port := fmt.Sprintf("%d", l.Addr().(*net.TCPAddr).Port)
+	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	return port, nil
 }
 
-func (s *BrowserSession) endpoint() string {
-	return "http://127.0.0.1:" + s.port
-}
-
 func (s *BrowserSession) start() error {
-	cfg := proxyinabox.Config.Pinchtab
+	cfg := proxyinabox.Config.Lightpanda
 	if cfg.Bin == "" {
-		return fmt.Errorf("pinchtab not configured (set pinchtab.bin in config)")
+		return fmt.Errorf("lightpanda not configured (set lightpanda.bin in config)")
 	}
 
 	port, err := allocateRandomPort()
@@ -61,131 +65,133 @@ func (s *BrowserSession) start() error {
 		return fmt.Errorf("allocate port: %w", err)
 	}
 	s.port = port
-	s.client = &http.Client{Timeout: 60 * time.Second}
 
-	profileDir, err := os.MkdirTemp("", "piab-profile-*")
-	if err != nil {
-		return fmt.Errorf("create profile dir: %w", err)
+	args := []string{
+		"serve",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(port),
 	}
-	s.profile = profileDir
-
-	chromeFlags := "--no-sandbox --disable-dev-shm-usage"
 	if s.proxyAddr != "" {
-		chromeFlags += " --proxy-server=" + s.proxyAddr
+		args = append(args, "--http_proxy", s.proxyAddr)
 	}
 
-	s.cmd = exec.Command(cfg.Bin)
-	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
-	s.cmd.Env = append(os.Environ(),
-		"PINCHTAB_PORT="+s.port,
-		"PINCHTAB_BIND=127.0.0.1",
-		"PINCHTAB_HEADLESS=true",
-		"PINCHTAB_ALLOW_EVALUATE=true",
-		"PINCHTAB_STEALTH=full",
-		"CHROME_FLAGS="+chromeFlags,
-	)
+	s.cmd = exec.Command(cfg.Bin, args...)
 	s.cmd.Stdout = os.Stdout
 	s.cmd.Stderr = os.Stderr
+	// Lightpanda 无需 Setpgid/Pdeathsig，SIGTERM 即可正常退出
+	s.cmd.Env = append(os.Environ(), "LIGHTPANDA_DISABLE_TELEMETRY=true")
 
 	if err := s.cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start pinchtab: %w", err)
+		return fmt.Errorf("failed to start lightpanda: %w", err)
 	}
 
-	pgidFile := filepath.Join(profileDir, "pgid")
-	os.WriteFile(pgidFile, []byte(fmt.Sprintf("%d", s.cmd.Process.Pid)), 0644)
+	fmt.Printf("[PIAB] lightpanda [🚀] started (pid=%d, port=%d)\n", s.cmd.Process.Pid, s.port)
 
-	fmt.Printf("[PIAB] pinchtab [🚀] started (pid=%d, port=%s, profile=%s)\n", s.cmd.Process.Pid, s.port, s.profile)
-
-	for i := 0; i < 30; i++ {
-		resp, err := http.Get(s.endpoint() + "/health")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				fmt.Println("[PIAB] pinchtab [✅] ready")
-				return nil
-			}
-		}
-		time.Sleep(time.Second)
+	// 等待 CDP 服务就绪：轮询 /json/version 获取 WebSocket URL
+	wsURL, err := s.waitForCDP()
+	if err != nil {
+		s.stop()
+		return err
 	}
 
-	s.stop()
-	return fmt.Errorf("pinchtab failed to become ready within 30s")
+	// 通过 go-rod 连接 CDP WebSocket
+	s.browser = rod.New().ControlURL(wsURL)
+	if err := s.browser.Connect(); err != nil {
+		s.stop()
+		return fmt.Errorf("CDP connect failed: %w", err)
+	}
+
+	fmt.Println("[PIAB] lightpanda [✅] ready")
+	return nil
 }
 
-func (s *BrowserSession) stop() {
-	if s.cmd == nil || s.cmd.Process == nil {
-		return
+func (s *BrowserSession) waitForCDP() (string, error) {
+	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	deadline := time.Now().Add(cdpConnectTimeout)
+
+	for time.Now().Before(deadline) {
+		// launcher.ResolveURL 查询 /json/version 并提取 WS URL
+		wsURL, err := launcher.ResolveURL(addr)
+		if err == nil && wsURL != "" {
+			return wsURL, nil
+		}
+		time.Sleep(healthCheckInterval)
 	}
 
-	fmt.Printf("[PIAB] pinchtab [🛑] stopping (pid=%d, profile=%s)\n", s.cmd.Process.Pid, s.profile)
-
-	// 通过 HTTP API 请求优雅关闭，让 pinchtab 自己回收 Chrome 子进程
-	s.client.Post(s.endpoint()+"/shutdown", "application/json", nil)
-
-	done := make(chan struct{})
-	go func() {
-		s.cmd.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		fmt.Println("[PIAB] pinchtab [✅] stopped")
-	case <-time.After(10 * time.Second):
-		fmt.Println("[PIAB] pinchtab [⚠️] kill process group")
-		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
-		s.cmd.Wait()
-	}
-
-	s.cmd = nil
-
-	if s.profile != "" {
-		os.RemoveAll(s.profile)
-		s.profile = ""
-	}
+	return "", fmt.Errorf("lightpanda CDP not ready on port %d after %s", s.port, cdpConnectTimeout)
 }
 
 func (s *BrowserSession) navigate(targetURL string) error {
-	body, _ := json.Marshal(map[string]string{"url": targetURL})
-	resp, err := s.client.Post(s.endpoint()+"/navigate", "application/json", bytes.NewReader(body))
+	// 每次导航创建新的 page target，确保隔离
+	if s.page != nil {
+		_ = s.page.Close()
+		s.page = nil
+	}
+
+	page, err := s.browser.Page(proto.TargetCreateTarget{URL: targetURL})
 	if err != nil {
-		return err
+		return fmt.Errorf("create page failed: %w", err)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+
+	err = page.Timeout(pageNavigationTimeout).WaitLoad()
 	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+		_ = page.Close()
+		return fmt.Errorf("wait load failed for %s: %w", targetURL, err)
 	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("navigate failed (HTTP %d): %s", resp.StatusCode, string(data))
-	}
+
+	s.page = page
 	return nil
 }
 
 func (s *BrowserSession) evaluate(expression string) (string, error) {
-	body, _ := json.Marshal(map[string]string{"expression": expression})
-	resp, err := s.client.Post(s.endpoint()+"/evaluate", "application/json", bytes.NewReader(body))
+	if s.page == nil {
+		return "", fmt.Errorf("no page loaded (call navigate first)")
+	}
+
+	// go-rod Eval 需要传入 JS 函数形式
+	result, err := s.page.Timeout(pageNavigationTimeout).Eval(`() => ` + expression)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("evaluate failed: %w", err)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("evaluate failed (HTTP %d): %s", resp.StatusCode, string(data))
-	}
-	var result struct {
-		Result interface{} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return "", fmt.Errorf("parse evaluate response: %w", err)
-	}
-	return fmt.Sprintf("%v", result.Result), nil
+	return result.Value.Str(), nil
 }
 
-// startSessionWithProxy 启动带指定 proxy 的 pinchtab 实例，设置为 activeSession
+func (s *BrowserSession) stop() {
+	if s.page != nil {
+		_ = s.page.Close()
+		s.page = nil
+	}
+
+	if s.browser != nil {
+		s.browser.Close()
+		s.browser = nil
+	}
+
+	if s.cmd == nil || s.cmd.Process == nil {
+		return
+	}
+
+	fmt.Printf("[PIAB] lightpanda [🛑] stopping (pid=%d)\n", s.cmd.Process.Pid)
+
+	// 优雅关闭：先 SIGTERM，超时则 SIGKILL
+	_ = s.cmd.Process.Signal(os.Interrupt)
+
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+
+	select {
+	case <-done:
+		fmt.Println("[PIAB] lightpanda [✅] stopped")
+	case <-time.After(shutdownGracePeriod):
+		fmt.Println("[PIAB] lightpanda [⚠️] force killing")
+		_ = s.cmd.Process.Kill()
+		<-done
+	}
+
+	s.cmd = nil
+}
+
+// startSessionWithProxy 启动带指定 proxy 的 lightpanda 实例，设置为 activeSession
 func startSessionWithProxy(proxyAddr string) (*BrowserSession, error) {
 	session := &BrowserSession{proxyAddr: proxyAddr}
 	if err := session.start(); err != nil {
@@ -202,15 +208,11 @@ func destroyActiveSession() {
 	}
 	session := activeSession
 	activeSession = nil
-
-	session.mu.Lock()
-	session.navigate("about:blank")
-	session.mu.Unlock()
 	session.stop()
 }
 
-// BrowserFetch 启动临时 pinchtab 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
-// 优先通过代理池中的随机 proxy 启动浏览器（Chromium --proxy-server），若导航失败则销毁 session 并用直连重试。
+// BrowserFetch 启动临时 lightpanda 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
+// 优先通过代理池中的随机 proxy 启动浏览器（lightpanda --http_proxy），若导航失败则销毁 session 并用直连重试。
 func BrowserFetch(targetURL string) (string, error) {
 	activeSessionMu.Lock()
 
@@ -254,8 +256,7 @@ func BrowserFetch(targetURL string) (string, error) {
 		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
 	}
 
-	time.Sleep(5 * time.Second)
-
+	// lightpanda 加载完成后直接通过 CDP 获取 HTML，无需额外等待
 	session.mu.Lock()
 	html, err := session.evaluate("document.body.innerHTML")
 	session.mu.Unlock()
@@ -282,49 +283,26 @@ func BrowserEval(expression string) (string, error) {
 	return session.evaluate(expression)
 }
 
-// ReleaseBrowser 停止当前 pinchtab 实例并清理 Chrome profile，释放所有资源
+// ReleaseBrowser 停止当前 lightpanda 实例，释放所有资源
 func ReleaseBrowser() {
 	activeSessionMu.Lock()
 	destroyActiveSession()
 	activeSessionMu.Unlock()
 }
 
-// StartPinchtab 兼容 test-source 子命令的预启动接口
-func StartPinchtab() error {
+// StartLightpanda 兼容 test-source 子命令的预启动接口
+func StartLightpanda() error {
 	activeSessionMu.Lock()
 	defer activeSessionMu.Unlock()
 
 	if activeSession != nil {
-		return fmt.Errorf("pinchtab already running")
+		return fmt.Errorf("lightpanda already running")
 	}
 	activeSession = &BrowserSession{}
 	return activeSession.start()
 }
 
-// StopPinchtab 兼容 test-source 子命令和信号处理的停止接口
-func StopPinchtab() {
+// StopLightpanda 兼容 test-source 子命令和信号处理的停止接口
+func StopLightpanda() {
 	ReleaseBrowser()
-}
-
-// CleanupStaleSessions 清理上次异常退出遗留的 pinchtab 进程组
-// 通过扫描 /tmp/piab-profile-*/pgid 找到残留的 PGID，kill 整个进程组后删除临时目录
-func CleanupStaleSessions() {
-	matches, err := filepath.Glob("/tmp/piab-profile-*/pgid")
-	if err != nil || len(matches) == 0 {
-		return
-	}
-	for _, pgidFile := range matches {
-		data, err := os.ReadFile(pgidFile)
-		if err != nil {
-			continue
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil || pid <= 0 {
-			continue
-		}
-		syscall.Kill(-pid, syscall.SIGKILL)
-		profileDir := filepath.Dir(pgidFile)
-		os.RemoveAll(profileDir)
-		fmt.Printf("[PIAB] pinchtab [🧹] cleaned stale session (pgid=%d, profile=%s)\n", pid, profileDir)
-	}
 }

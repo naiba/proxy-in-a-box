@@ -1,6 +1,6 @@
 # Proxy-in-a-Box
 
-[![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
 Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources, validates them, and provides HTTP/HTTPS proxy servers with automatic rotation, rate limiting, and TLS fingerprint spoofing.
@@ -10,7 +10,7 @@ Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources,
 ## Features
 
 - **YAML-driven sources** — All proxy sources defined as YAML configs with Lua scripting for complex logic
-- **Headless browser scraping** — Integrated [pinchtab](https://github.com/pinchtab/pinchtab) for JS-rendered pages (e.g. IPRoyal)
+- **Headless browser scraping** — Integrated [Lightpanda](https://github.com/lightpanda-io/browser) for JS-rendered pages (e.g. IPRoyal)
 - **Auto-validation** — Concurrent proxy verification with configurable worker pool
 - **Smart rotation** — Automatic proxy assignment based on domain and IP limits
 - **Rate limiting** — Configurable requests per IP and domains per IP
@@ -50,14 +50,26 @@ proxy-in-a-box
 ```
 Usage:
   proxy-in-a-box [flags]
+  proxy-in-a-box [command]
+
+Available Commands:
+  test-source    Test a single proxy source YAML file (fetch + verify availability)
 
 Flags:
   -c, --conf string   config file (default "./data/pb.yaml")
-  -p, --ha string     http proxy server addr (default "127.0.0.1:8080")
-  -s, --sa string     https proxy server addr (default "127.0.0.1:8081")
-  -m, --ma string     management api addr (default "0.0.0.0:8083")
+  -p, --ha string     http proxy server addr (default "0.0.0.0:8080")
+  -s, --sa string     https proxy server addr (default "0.0.0.0:8081")
+  -m, --ma string     management/dashboard addr (default "0.0.0.0:8083")
   -h, --help          help for proxy-in-a-box
 ```
+
+### Test a Source
+
+```bash
+proxy-in-a-box test-source data/sources/my-source.yaml [-w 20]
+```
+
+Fetches proxies from the specified source YAML file and verifies their availability. Use `-w` to set concurrent verification workers (default: 20).
 
 Configure your application to use the proxy:
 
@@ -66,11 +78,15 @@ HTTP Proxy:  http://127.0.0.1:8080
 HTTPS Proxy: https://127.0.0.1:8081
 ```
 
-Management API:
+Management Dashboard & API:
 
 ```
-GET /stat  — Pool statistics
-GET /get   — Get one available proxy
+GET /             — Web dashboard (pool overview, proxy list, source status)
+GET /stat         — Pool statistics (plain text)
+GET /get          — Get one available proxy
+GET /api/stats    — Pool statistics (JSON: totals, by protocol/source, blocked IPs, request stats)
+GET /api/proxies  — Full proxy list (JSON)
+GET /api/sources  — Source fetch statuses (JSON)
 ```
 
 ## Configuration
@@ -92,10 +108,9 @@ sys:
 enable_mitm: false
 
 # Headless browser for JS-rendered pages (optional)
-# Requires pinchtab binary — included in Docker image
-pinchtab:
-  bin: pinchtab              # binary path (leave empty to disable)
-  port: "9867"               # listen port
+# Requires lightpanda binary — included in Docker image
+lightpanda:
+  bin: lightpanda             # binary path (leave empty to disable)
 ```
 
 ## Proxy Sources
@@ -154,7 +169,7 @@ script: |
 
 ### Browser-powered scraping (for JS-rendered pages)
 
-Requires `pinchtab` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page.
+Requires `lightpanda` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page.
 
 ```yaml
 name: iproyal
@@ -188,18 +203,6 @@ script: |
   return proxies
 ```
 
-### Included Sources
-
-| Source | Type | Method |
-|--------|------|--------|
-| TheSpeedX (http/socks4/socks5) | text | GitHub raw files |
-| ProxyScrape | json | Public API |
-| GeoNode | json | Public API |
-| KuaiDaiLi | script | Web scraping + JSON extraction |
-| ProxyRack | script | API |
-| Monosans | text | GitHub raw file |
-| IPRoyal | script | Headless browser (pinchtab) |
-
 ## Architecture
 
 ```
@@ -216,7 +219,7 @@ script: |
                     │  YAML Sources   │ Validators            │
                     │  text/json/lua  │ (concurrent workers)  │
                     ├─────────────────────────────────────────┤
-                    │  pinchtab ←──── Chrome (headless)       │
+                    │       Lightpanda (headless browser)      │
                     └─────────────────────────────────────────┘
                                      │
                                      ▼
@@ -233,10 +236,10 @@ ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
 
 ## Tech Stack
 
-- **Language**: Go 1.23
+- **Language**: Go 1.25
 - **Database**: SQLite (via `glebarez/sqlite` + GORM)
 - **Scripting**: gopher-lua (Lua 5.1 VM)
-- **Browser**: [pinchtab](https://github.com/pinchtab/pinchtab) + Chromium
+- **Browser**: [Lightpanda](https://github.com/lightpanda-io/browser)
 - **TLS**: uTLS for fingerprint spoofing
 - **HTTP**: Standard library + custom MITM proxy
 

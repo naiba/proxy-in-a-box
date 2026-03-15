@@ -161,7 +161,7 @@ var rootCmd = &cobra.Command{
 		c.AddFunc("0 0 3 * * *", crawler.CleanupStaleProxies)
 		c.Start()
 
-		// 信号处理：统一的清理路径，确保 pinchtab 和 Chrome 子进程被完整回收
+		// 信号处理：统一的清理路径，确保 lightpanda 子进程被完整回收
 		// os.Exit 不会触发 defer，所以必须在信号处理中显式调用清理函数
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -169,7 +169,7 @@ var rootCmd = &cobra.Command{
 			sig := <-sigCh
 			fmt.Printf("[PIAB] received signal %v, shutting down...\n", sig)
 			c.Stop()
-			crawler.StopPinchtab()
+			crawler.StopLightpanda()
 			os.Exit(0)
 		}()
 

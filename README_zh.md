@@ -1,6 +1,6 @@
 # Proxy-in-a-Box
 
-[![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
 自动化代理池，专为网页爬虫设计。通过 YAML 配置定义代理源，自动抓取和验证代理，提供 HTTP/HTTPS 代理服务，支持自动轮换、速率限制和 TLS 指纹伪装。
@@ -10,7 +10,7 @@
 ## 功能特性
 
 - **YAML 驱动的数据源** — 所有代理源通过 YAML 配置定义，支持 Lua 脚本处理复杂逻辑
-- **无头浏览器抓取** — 集成 [pinchtab](https://github.com/pinchtab/pinchtab)，处理 JS 渲染的页面（如 IPRoyal）
+- **无头浏览器抓取** — 集成 [Lightpanda](https://github.com/lightpanda-io/browser)，处理 JS 渲染的页面（如 IPRoyal）
 - **自动验证** — 并发代理验证，可配置工作线程数
 - **智能轮换** — 基于域名和 IP 限制自动分配代理
 - **速率限制** — 可配置每 IP 请求数和每 IP 域名数
@@ -50,14 +50,26 @@ proxy-in-a-box
 ```
 用法:
   proxy-in-a-box [flags]
+  proxy-in-a-box [command]
+
+可用命令:
+  test-source    测试单个代理源 YAML 文件（抓取 + 验证可用性）
 
 参数:
   -c, --conf string   配置文件路径 (默认 "./data/pb.yaml")
-  -p, --ha string     HTTP 代理服务地址 (默认 "127.0.0.1:8080")
-  -s, --sa string     HTTPS 代理服务地址 (默认 "127.0.0.1:8081")
-  -m, --ma string     管理 API 地址 (默认 "0.0.0.0:8083")
+  -p, --ha string     HTTP 代理服务地址 (默认 "0.0.0.0:8080")
+  -s, --sa string     HTTPS 代理服务地址 (默认 "0.0.0.0:8081")
+  -m, --ma string     管理面板/API 地址 (默认 "0.0.0.0:8083")
   -h, --help          帮助信息
 ```
+
+### 测试数据源
+
+```bash
+proxy-in-a-box test-source data/sources/my-source.yaml [-w 20]
+```
+
+从指定的源 YAML 文件抓取代理并验证其可用性。使用 `-w` 设置并发验证工作线程数（默认 20）。
 
 在你的应用中配置代理：
 
@@ -66,11 +78,15 @@ HTTP 代理:  http://127.0.0.1:8080
 HTTPS 代理: https://127.0.0.1:8081
 ```
 
-管理 API：
+管理面板和 API：
 
 ```
-GET /stat  — 代理池统计
-GET /get   — 获取一个可用代理
+GET /             — Web 管理面板（代理池概览、代理列表、数据源状态）
+GET /stat         — 代理池统计（纯文本）
+GET /get          — 获取一个可用代理
+GET /api/stats    — 代理池统计（JSON：总数、按协议/来源分类、封禁 IP、请求统计）
+GET /api/proxies  — 全量代理列表（JSON）
+GET /api/sources  — 各数据源抓取状态（JSON）
 ```
 
 ## 配置说明
@@ -92,10 +108,9 @@ sys:
 enable_mitm: false
 
 # 无头浏览器配置（可选）
-# 需要 pinchtab 二进制 — Docker 镜像已内置
-pinchtab:
-  bin: pinchtab              # 二进制路径（留空则禁用）
-  port: "9867"               # 监听端口
+# 需要 lightpanda 二进制 — Docker 镜像已内置
+lightpanda:
+  bin: lightpanda             # 二进制路径（留空则禁用）
 ```
 
 ## 代理来源
@@ -154,7 +169,7 @@ script: |
 
 ### 浏览器抓取（JS 渲染页面）
 
-需要配置 `pinchtab`。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。
+需要配置 `lightpanda`。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。
 
 ```yaml
 name: iproyal
@@ -188,18 +203,6 @@ script: |
   return proxies
 ```
 
-### 内置数据源
-
-| 来源 | 类型 | 方式 |
-|------|------|------|
-| TheSpeedX (http/socks4/socks5) | text | GitHub 原始文件 |
-| ProxyScrape | json | 公开 API |
-| GeoNode | json | 公开 API |
-| 快代理 | script | 网页抓取 + JSON 提取 |
-| ProxyRack | script | API |
-| Monosans | text | GitHub 原始文件 |
-| IPRoyal | script | 无头浏览器 (pinchtab) |
-
 ## 架构
 
 ```
@@ -216,7 +219,7 @@ script: |
                     │  YAML 数据源    │ 验证器                │
                     │  text/json/lua  │ (并发工作线程)        │
                     ├─────────────────────────────────────────┤
-                    │  pinchtab ←──── Chrome (无头模式)       │
+                    │       Lightpanda（无头浏览器）           │
                     └─────────────────────────────────────────┘
                                      │
                                      ▼
@@ -233,10 +236,10 @@ ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
 
 ## 技术栈
 
-- **语言**：Go 1.23
+- **语言**：Go 1.25
 - **数据库**：SQLite（`glebarez/sqlite` + GORM）
 - **脚本引擎**：gopher-lua（Lua 5.1 VM）
-- **浏览器**：[pinchtab](https://github.com/pinchtab/pinchtab) + Chromium
+- **浏览器**：[Lightpanda](https://github.com/lightpanda-io/browser)
 - **TLS**：uTLS 指纹伪装
 - **HTTP**：标准库 + 自定义 MITM 代理
 

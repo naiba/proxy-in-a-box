@@ -14,8 +14,10 @@ var proxyServiceInstance proxyinabox.ProxyService
 const staleProxyThreshold = 6 * 30 * 24 * time.Hour
 
 func Init() {
-	CleanupStaleSessions()
-	proxyinabox.CI.LoadLockedIPs()
+	// BUG-FIX: test-source 子命令不初始化 CI（缓存实例），跳过依赖 CI 的操作避免 nil panic
+	if proxyinabox.CI != nil {
+		proxyinabox.CI.LoadLockedIPs()
+	}
 
 	ValidateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
 	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {

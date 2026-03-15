@@ -28,11 +28,9 @@ type Conf struct {
 		DomainsPerIP      int   `mapstructure:"domains_per_ip"`
 		RequestLimitPerIP int64 `mapstructure:"request_limit_per_ip"`
 	}
-	Pinchtab struct {
-		// pinchtab 二进制路径，留空则禁用浏览器抓取
+	Lightpanda struct {
+		// lightpanda 二进制路径，留空则禁用浏览器抓取
 		Bin string
-		// pinchtab 监听端口，默认 9867
-		Port string
 	}
 	// EnableMITM 是否启用 HTTPS 中间人解密，默认 false（关闭时走 TCP 隧道透传，客户端无需关闭 TLS 验证）
 	EnableMITM bool `mapstructure:"enable_mitm"`

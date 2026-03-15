@@ -103,8 +103,7 @@ func (s *RequestStats) Snapshot() RequestStatsSnapshot {
 }
 
 type ProcessCounts struct {
-	Chromium int `json:"chromium"`
-	Pinchtab int `json:"pinchtab"`
+	Lightpanda int `json:"lightpanda"`
 }
 
 // pgrep 未找到进程时返回退出码 1，此时返回 0（非错误）
@@ -123,7 +122,6 @@ func GetProcessCounts() ProcessCounts {
 	processCountsMu.Lock()
 	defer processCountsMu.Unlock()
 	return ProcessCounts{
-		Chromium: countProcessByName("chromium"),
-		Pinchtab: countProcessByName("pinchtab"),
+		Lightpanda: countProcessByName("lightpanda"),
 	}
 }
