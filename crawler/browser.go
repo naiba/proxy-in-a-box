@@ -79,7 +79,13 @@ func (s *BrowserSession) start() error {
 	s.cmd.Stdout = os.Stdout
 	s.cmd.Stderr = os.Stderr
 	// Lightpanda 无需 Setpgid/Pdeathsig，SIGTERM 即可正常退出
-	s.cmd.Env = append(os.Environ(), "LIGHTPANDA_DISABLE_TELEMETRY=true")
+	s.cmd.Env = append(os.Environ(),
+		"LIGHTPANDA_DISABLE_TELEMETRY=true",
+		// BUG-FIX: Lightpanda 通过 std.fs.getAppDataDir("lightpanda") 解析数据目录，
+		// 该调用依赖 $XDG_DATA_HOME。非 root 用户（如 Docker 中 UID 65534）没有可写的
+		// home 目录，导致默认路径 $HOME/.local/share/lightpanda 写入时报 AccessDenied。
+		"XDG_DATA_HOME=/tmp",
+	)
 
 	if err := s.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start lightpanda: %w", err)
