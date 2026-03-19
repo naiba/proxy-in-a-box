@@ -25,12 +25,13 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/lightpanda
 
 COPY --from=builder /build/proxy-in-a-box /usr/local/bin/proxy-in-a-box
+COPY docker-entrypoint.sh /usr/local/bin/
 WORKDIR /app
-# SQLite 需要对数据目录有写权限，USER 65534 (nobody) 无法写入 root 拥有的目录
-RUN mkdir -p /app/data && chown 65534:65534 /app/data
+RUN mkdir -p /app/data
 
 EXPOSE 8080 8081 8083
 
-USER 65534
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# BUG-FIX: 不能在此处 USER 65534，因为 volume 挂载会覆盖构建阶段的 chown。
+# entrypoint 以 root 启动修复权限后再降权到 nobody(65534)。
+ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["proxy-in-a-box", "-c", "/app/data/pb.yaml"]
