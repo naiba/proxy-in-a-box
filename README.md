@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
-Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources, validates them, and provides HTTP/HTTPS proxy servers with automatic rotation, rate limiting, and TLS fingerprint spoofing.
+Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources, validates them, and provides HTTP/HTTPS proxy servers with automatic rotation and TLS fingerprint spoofing.
 
 [中文说明](README_zh.md)
 
@@ -13,7 +13,6 @@ Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources,
 - **Headless browser scraping** — Integrated [Lightpanda](https://github.com/lightpanda-io/browser) for JS-rendered pages (e.g. IPRoyal)
 - **Auto-validation** — Concurrent proxy verification with configurable worker pool
 - **Smart rotation** — Automatic proxy assignment based on domain and IP limits
-- **Rate limiting** — Configurable requests per IP and domains per IP
 - **TLS fingerprint spoofing** — Uses uTLS to mimic Chrome browser fingerprints
 - **MITM support** — Built-in man-in-the-middle proxy for HTTPS traffic
 - **SQLite storage** — Lightweight embedded database, no external dependencies
@@ -99,8 +98,6 @@ debug: true
 sys:
   name: MyProxy
   proxy_verify_worker: 20    # concurrent verification workers
-  domains_per_ip: 30         # max domains per IP in 30 minutes
-  request_limit_per_ip: 10   # max requests per IP per second
 
 # HTTPS MITM decryption (default: false)
 # When enabled, the proxy decrypts HTTPS traffic using a self-signed CA — clients must disable TLS verification or trust the CA.

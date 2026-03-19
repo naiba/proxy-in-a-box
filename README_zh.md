@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
-自动化代理池，专为网页爬虫设计。通过 YAML 配置定义代理源，自动抓取和验证代理，提供 HTTP/HTTPS 代理服务，支持自动轮换、速率限制和 TLS 指纹伪装。
+自动化代理池，专为网页爬虫设计。通过 YAML 配置定义代理源，自动抓取和验证代理，提供 HTTP/HTTPS 代理服务，支持自动轮换和 TLS 指纹伪装。
 
 [English](README.md)
 
@@ -13,7 +13,6 @@
 - **无头浏览器抓取** — 集成 [Lightpanda](https://github.com/lightpanda-io/browser)，处理 JS 渲染的页面（如 IPRoyal）
 - **自动验证** — 并发代理验证，可配置工作线程数
 - **智能轮换** — 基于域名和 IP 限制自动分配代理
-- **速率限制** — 可配置每 IP 请求数和每 IP 域名数
 - **TLS 指纹伪装** — 使用 uTLS 模拟 Chrome 浏览器指纹
 - **MITM 支持** — 内置中间人代理处理 HTTPS 流量
 - **SQLite 存储** — 轻量级嵌入式数据库，无外部依赖
@@ -99,8 +98,6 @@ debug: true
 sys:
   name: MyProxy
   proxy_verify_worker: 20    # 并发验证工作线程数
-  domains_per_ip: 30         # 30 分钟内每个 IP 可访问的最大域名数
-  request_limit_per_ip: 10   # 每秒每个 IP 的最大请求数
 
 # HTTPS 中间人解密（默认关闭）
 # 开启后代理会用自签 CA 解密 HTTPS 流量，客户端需关闭 TLS 验证或信任该 CA

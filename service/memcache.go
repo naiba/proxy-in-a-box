@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,31 +50,11 @@ type domainScheduling struct {
 	dl map[string][]*proxyEntry
 }
 
-type ipActivityEntry struct {
-	lastActive int64
-	num        int64
-}
-type ipActivity struct {
-	l    sync.Mutex
-	list map[string]*ipActivityEntry
-}
-
-type domainActivity struct {
-	domains map[string]int64
-	last    int64
-}
-type domainActivityList struct {
-	l    sync.Mutex
-	list map[string]*domainActivity
-}
-
 type MemCache struct {
-	proxies     *proxyList
-	domains     *domainScheduling
-	ips         *ipActivity
-	domainLimit *domainActivityList
-	lockedIPs   sync.Map
-	failureMu   sync.Mutex
+	proxies   *proxyList
+	domains   *domainScheduling
+	lockedIPs sync.Map
+	failureMu sync.Mutex
 }
 
 func NewMemCache() *MemCache {
@@ -86,12 +65,6 @@ func NewMemCache() *MemCache {
 		},
 		domains: &domainScheduling{
 			dl: make(map[string][]*proxyEntry),
-		},
-		ips: &ipActivity{
-			list: make(map[string]*ipActivityEntry),
-		},
-		domainLimit: &domainActivityList{
-			list: make(map[string]*domainActivity),
 		},
 	}
 	c.load()
@@ -129,35 +102,6 @@ func (c *MemCache) gc(dur time.Duration) {
 		for range ticker.C {
 			num := 0
 			now := time.Now().Unix()
-			c.domainLimit.l.Lock()
-			for k, v := range c.domainLimit.list {
-				if now-v.last > 60*30 {
-					delete(c.domainLimit.list, k)
-					num++
-				} else {
-					for k1, v1 := range v.domains {
-						if now-v1 > 60*30 {
-							delete(v.domains, k1)
-							num++
-						}
-					}
-					if len(v.domains) == 0 {
-						delete(c.domainLimit.list, k)
-						num++
-					}
-				}
-			}
-			c.domainLimit.l.Unlock()
-			now = time.Now().Unix()
-			c.ips.l.Lock()
-			for k, v := range c.ips.list {
-				if v.lastActive != now {
-					delete(c.ips.list, k)
-					num++
-				}
-			}
-			c.ips.l.Unlock()
-			now = time.Now().Unix()
 			c.domains.l.Lock()
 			// BUG-FIX: 使用倒序遍历删除切片元素，避免索引错位导致某些记录未清理
 			for k, v := range c.domains.dl {
@@ -280,62 +224,6 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s:all(%d),domain(%s)", "No free agent can be used:", length, domain)
-}
-
-// --- 限流 ---
-
-func (c *MemCache) IPLimiter(req *http.Request) bool {
-	c.ips.l.Lock()
-	defer c.ips.l.Unlock()
-	now := time.Now().Unix()
-	ip := getIP(req.RemoteAddr)
-
-	entry, has := c.ips.list[ip]
-	if has {
-		if now == entry.lastActive {
-			// BUG-FIX: 使用 >= 而非 >，确保只允许 limit 个请求，而不是 limit+1
-			if entry.num >= proxyinabox.Config.Sys.RequestLimitPerIP {
-				return false
-			}
-			entry.num++
-		} else {
-			entry.num = 1
-		}
-		entry.lastActive = now
-	} else {
-		c.ips.list[ip] = &ipActivityEntry{num: 1, lastActive: now}
-	}
-	return true
-}
-
-func (c *MemCache) HostLimiter(req *http.Request) bool {
-	c.domainLimit.l.Lock()
-	defer c.domainLimit.l.Unlock()
-	ip := getIP(req.RemoteAddr)
-	domain := req.Host
-	now := time.Now().Unix()
-	ds, has := c.domainLimit.list[ip]
-	if !has {
-		c.domainLimit.list[ip] = &domainActivity{
-			domains: make(map[string]int64),
-		}
-		c.domainLimit.list[ip].domains[domain] = now
-		return true
-	}
-	if now-ds.last > 60*30 {
-		ds.domains = make(map[string]int64)
-		ds.domains[domain] = now
-		ds.last = now
-		return true
-	}
-	ds.domains[domain] = now
-	ds.last = now
-	for k, v := range ds.domains {
-		if now-v > 60*30 {
-			delete(ds.domains, k)
-		}
-	}
-	return len(ds.domains) < proxyinabox.Config.Sys.DomainsPerIP
 }
 
 // --- 代理生命周期 ---
@@ -510,8 +398,4 @@ func (c *MemCache) removeByURIFromCacheLocked(uri string) {
 func (c *MemCache) clearFailureLocked(ip string) {
 	c.lockedIPs.Delete(ip)
 	proxyinabox.DB.Where("ip = ?", ip).Delete(&proxyinabox.BlockedIP{})
-}
-
-func getIP(str string) string {
-	return strings.Split(str, ":")[0]
 }

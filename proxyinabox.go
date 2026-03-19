@@ -24,9 +24,7 @@ type Conf struct {
 	}
 	Sys struct {
 		Name              string
-		ProxyVerifyWorker int   `mapstructure:"proxy_verify_worker"`
-		DomainsPerIP      int   `mapstructure:"domains_per_ip"`
-		RequestLimitPerIP int64 `mapstructure:"request_limit_per_ip"`
+		ProxyVerifyWorker int `mapstructure:"proxy_verify_worker"`
 	}
 	Lightpanda struct {
 		// lightpanda 二进制路径，留空则禁用浏览器抓取

@@ -33,12 +33,6 @@ func newTestCache(t *testing.T) *MemCache {
 		domains: &domainScheduling{
 			dl: make(map[string][]*proxyEntry),
 		},
-		ips: &ipActivity{
-			list: make(map[string]*ipActivityEntry),
-		},
-		domainLimit: &domainActivityList{
-			list: make(map[string]*domainActivity),
-		},
 	}
 }
 
@@ -447,9 +441,7 @@ func TestLoadExcludesBlockedIPs(t *testing.T) {
 			pl:    make([]*proxyEntry, 0),
 			index: make(map[string]struct{}),
 		},
-		domains:     &domainScheduling{dl: make(map[string][]*proxyEntry)},
-		ips:         &ipActivity{list: make(map[string]*ipActivityEntry)},
-		domainLimit: &domainActivityList{list: make(map[string]*domainActivity)},
+		domains: &domainScheduling{dl: make(map[string][]*proxyEntry)},
 	}
 	c.load()
 

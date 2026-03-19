@@ -14,10 +14,6 @@ type Cache interface {
 	HasProxy(p string) bool
 	GetAllProxies() []Proxy
 
-	// --- 限流 ---
-	IPLimiter(req *http.Request) bool
-	HostLimiter(req *http.Request) bool
-
 	// --- 代理生命周期（DB + 内存原子操作） ---
 
 	// UpsertProxy 新代理首次验证成功时调用。

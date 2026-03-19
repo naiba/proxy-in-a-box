@@ -315,12 +315,6 @@ func newMITM() *mitm.MITM {
 		HTTPSAddr:   httpsProxyAddr,
 		Scheduler:   proxyinabox.CI.PickProxy,
 		Filter: func(req *http.Request) error {
-			if !proxyinabox.CI.IPLimiter(req) {
-				return fmt.Errorf("%s", "请求次数过快")
-			}
-			if !proxyinabox.CI.HostLimiter(req) {
-				return fmt.Errorf("%s", "请求域名过多")
-			}
 			return nil
 		},
 		OnProxyFailure: func(proxyURI string) {
