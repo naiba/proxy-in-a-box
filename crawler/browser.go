@@ -1,6 +1,7 @@
 package crawler
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 
@@ -33,6 +35,7 @@ type BrowserSession struct {
 	cmd       *exec.Cmd
 	port      int
 	browser   *rod.Browser
+	cdpWS     *cdp.WebSocket // BUG-FIX: 保留 WebSocket 引用，stop() 时先关闭它，让 consumeMessages goroutine 安全退出
 	page      *rod.Page
 	proxyAddr string
 	mu        sync.Mutex
@@ -104,8 +107,18 @@ func (s *BrowserSession) start() error {
 		return err
 	}
 
-	// 通过 go-rod 连接 CDP WebSocket
-	s.browser = rod.New().ControlURL(wsURL)
+	// 手动创建 WebSocket + CDP Client，保留 ws 引用以便 stop() 时主动关闭连接。
+	// rod 的 browser.Close() 只发 CDP 命令不关 WebSocket，进程被杀后
+	// consumeMessages goroutine 会读到非 JSON 数据触发 panic。
+	ws := &cdp.WebSocket{}
+	if err := ws.Connect(context.Background(), wsURL, nil); err != nil {
+		s.stop()
+		return fmt.Errorf("CDP WebSocket connect failed: %w", err)
+	}
+	s.cdpWS = ws
+
+	cdpClient := cdp.New().Start(ws)
+	s.browser = rod.New().Client(cdpClient)
 	if err := s.browser.Connect(); err != nil {
 		s.stop()
 		return fmt.Errorf("CDP connect failed: %w", err)
@@ -172,45 +185,37 @@ func (s *BrowserSession) stop() {
 		s.page = nil
 	}
 
-	// BUG-FIX: 必须先终止 lightpanda 进程，再关闭 browser (CDP 连接)。
-	// 旧顺序是先 browser.Close() 再发 SIGTERM，但 go-rod 的 consumeMessages goroutine
-	// 在进程收到信号后可能读到非 JSON 数据（如 \x03 ETX），触发 utils.E() panic。
-	// 正确顺序：先杀进程 → 等退出 → 再清理 browser 对象。
-	if s.cmd != nil && s.cmd.Process != nil {
-		fmt.Printf("[PIAB] lightpanda [🛑] stopping (pid=%d)\n", s.cmd.Process.Pid)
+	// BUG-FIX: 必须在杀进程之前关闭 WebSocket，否则 go-rod 的 consumeMessages goroutine
+	// 会在进程退出时读到非 JSON 数据（如 \x03 ETX），触发 utils.E() panic。
+	// 关闭 WebSocket 后 ws.Read() 返回 error，consumeMessages 走正常退出路径。
+	// recover 无法捕获其他 goroutine 的 panic，所以必须从源头阻断。
+	if s.cdpWS != nil {
+		_ = s.cdpWS.Close()
+		s.cdpWS = nil
+	}
+	s.browser = nil
 
-		// 优雅关闭：先 SIGTERM，超时则 SIGKILL
-		_ = s.cmd.Process.Signal(os.Interrupt)
-
-		done := make(chan error, 1)
-		go func() { done <- s.cmd.Wait() }()
-
-		select {
-		case <-done:
-			fmt.Println("[PIAB] lightpanda [✅] stopped")
-		case <-time.After(shutdownGracePeriod):
-			fmt.Println("[PIAB] lightpanda [⚠️] force killing")
-			_ = s.cmd.Process.Kill()
-			<-done
-		}
-
-		s.cmd = nil
+	if s.cmd == nil || s.cmd.Process == nil {
+		return
 	}
 
-	// BUG-FIX: 进程退出后 CDP WebSocket 已断开，go-rod 内部 consumeMessages goroutine
-	// 可能因读到 EOF/非法数据而 panic（utils.E 直接 panic 而非返回 error）。
-	// 用 recover 兜底，防止关闭阶段的 panic 传播到调用方。
-	if s.browser != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Printf("[PIAB] lightpanda [⚠️] recovered panic during browser close: %v\n", r)
-				}
-			}()
-			s.browser.Close()
-		}()
-		s.browser = nil
+	fmt.Printf("[PIAB] lightpanda [🛑] stopping (pid=%d)\n", s.cmd.Process.Pid)
+
+	_ = s.cmd.Process.Signal(os.Interrupt)
+
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+
+	select {
+	case <-done:
+		fmt.Println("[PIAB] lightpanda [✅] stopped")
+	case <-time.After(shutdownGracePeriod):
+		fmt.Println("[PIAB] lightpanda [⚠️] force killing")
+		_ = s.cmd.Process.Kill()
+		<-done
 	}
+
+	s.cmd = nil
 }
 
 // startSessionWithProxy 启动带指定 proxy 的 lightpanda 实例，设置为 activeSession
