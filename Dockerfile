@@ -26,6 +26,8 @@ RUN apt-get update \
 
 COPY --from=builder /build/proxy-in-a-box /usr/local/bin/proxy-in-a-box
 WORKDIR /app
+# SQLite 需要对数据目录有写权限，USER 65534 (nobody) 无法写入 root 拥有的目录
+RUN mkdir -p /app/data && chown 65534:65534 /app/data
 
 EXPOSE 8080 8081 8083
 
