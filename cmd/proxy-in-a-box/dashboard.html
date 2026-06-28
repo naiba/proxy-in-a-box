@@ -43,7 +43,7 @@ a{color:var(--blue);text-decoration:none}
 .proto-socks5{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
 .process-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .proc-badge{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:3px;font-weight:500}
-.proc-lightpanda{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
+.proc-obscura{background:#a78bfa20;color:var(--purple);border:1px solid #a78bfa40}
 
 /* Section */
 .section{margin:24px 0 12px}
@@ -177,10 +177,10 @@ tr:hover td{background:#ffffff06}
     document.getElementById('statSourcesSub').textContent=sk.join(', ');
 
     var proc=stats.processes||{};
-    var totalProc=(proc.lightpanda||0);
+    var totalProc=(proc.obscura||0);
     document.getElementById('statProcesses').textContent=totalProc;
     document.getElementById('processBadges').innerHTML=
-      '<span class="proc-badge proc-lightpanda">lightpanda: '+(proc.lightpanda||0)+'</span>';
+      '<span class="proc-badge proc-obscura">obscura: '+(proc.obscura||0)+'</span>';
 
     document.getElementById('statBlocked').textContent=stats.blocked_ips||0;
 

@@ -103,7 +103,7 @@ func (s *RequestStats) Snapshot() RequestStatsSnapshot {
 }
 
 type ProcessCounts struct {
-	Lightpanda int `json:"lightpanda"`
+	Obscura int `json:"obscura"`
 }
 
 // pgrep 未找到进程时返回退出码 1，此时返回 0（非错误）
@@ -122,6 +122,6 @@ func GetProcessCounts() ProcessCounts {
 	processCountsMu.Lock()
 	defer processCountsMu.Unlock()
 	return ProcessCounts{
-		Lightpanda: countProcessByName("lightpanda"),
+		Obscura: countProcessByName("obscura"),
 	}
 }
