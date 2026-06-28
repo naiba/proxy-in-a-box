@@ -19,17 +19,17 @@ import (
 )
 
 const (
-	// cdpConnectTimeout 是等待 Lightpanda CDP 服务就绪的最大时间
+	// cdpConnectTimeout 是等待 Obscura CDP 服务就绪的最大时间
 	cdpConnectTimeout = 30 * time.Second
 	// pageNavigationTimeout 是单次页面导航+渲染的最大时间
 	pageNavigationTimeout = 60 * time.Second
 	// healthCheckInterval 是轮询 CDP /json/version 的间隔
 	healthCheckInterval = 300 * time.Millisecond
-	// shutdownGracePeriod 是发送 SIGTERM 后等待进程退出的宽限期，超时则 SIGKILL
+	// shutdownGracePeriod 是发送中断信号后等待进程退出的宽限期，超时则 SIGKILL
 	shutdownGracePeriod = 3 * time.Second
 )
 
-// BrowserSession 管理单次浏览器抓取的完整生命周期（lightpanda 进程 + CDP 连接）
+// BrowserSession 管理单次浏览器抓取的完整生命周期（Obscura 进程 + CDP 连接）
 // 每个 runScript 调用创建独立 session，用完即销毁，避免资源泄漏
 type BrowserSession struct {
 	cmd       *exec.Cmd
@@ -58,13 +58,13 @@ func allocateRandomPort() (int, error) {
 }
 
 func (s *BrowserSession) start() error {
-	cfg := proxyinabox.Config.Lightpanda
-	// 默认在 $PATH 中查找 lightpanda，Docker 镜像已将其安装到 /usr/local/bin/
+	cfg := proxyinabox.Config.Obscura
+	// 默认在 $PATH 中查找 obscura，Docker 镜像已将其安装到 /usr/local/bin/
 	if cfg.Bin == "" {
-		cfg.Bin = "lightpanda"
+		cfg.Bin = "obscura"
 	}
 	if _, err := exec.LookPath(cfg.Bin); err != nil {
-		return fmt.Errorf("lightpanda binary not found: %w (set lightpanda.bin in config or install lightpanda)", err)
+		return fmt.Errorf("obscura binary not found: %w (set obscura.bin in config or install obscura)", err)
 	}
 
 	port, err := allocateRandomPort()
@@ -73,32 +73,17 @@ func (s *BrowserSession) start() error {
 	}
 	s.port = port
 
-	args := []string{
-		"serve",
-		"--host", "127.0.0.1",
-		"--port", strconv.Itoa(port),
-	}
-	if s.proxyAddr != "" {
-		args = append(args, "--http_proxy", s.proxyAddr)
-	}
+	args := buildObscuraServeArgs(port, s.proxyAddr)
 
 	s.cmd = exec.Command(cfg.Bin, args...)
 	s.cmd.Stdout = os.Stdout
 	s.cmd.Stderr = os.Stderr
-	// Lightpanda 无需 Setpgid/Pdeathsig，SIGTERM 即可正常退出
-	s.cmd.Env = append(os.Environ(),
-		"LIGHTPANDA_DISABLE_TELEMETRY=true",
-		// BUG-FIX: Lightpanda 通过 std.fs.getAppDataDir("lightpanda") 解析数据目录，
-		// 该调用依赖 $XDG_DATA_HOME。非 root 用户（如 Docker 中 UID 65534）没有可写的
-		// home 目录，导致默认路径 $HOME/.local/share/lightpanda 写入时报 AccessDenied。
-		"XDG_DATA_HOME=/tmp",
-	)
 
 	if err := s.cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start lightpanda: %w", err)
+		return fmt.Errorf("failed to start obscura: %w", err)
 	}
 
-	fmt.Printf("[PIAB] lightpanda [🚀] started (pid=%d, port=%d)\n", s.cmd.Process.Pid, s.port)
+	fmt.Printf("[PIAB] obscura [🚀] started (pid=%d, port=%d)\n", s.cmd.Process.Pid, s.port)
 
 	// 等待 CDP 服务就绪：轮询 /json/version 获取 WebSocket URL
 	wsURL, err := s.waitForCDP()
@@ -124,8 +109,21 @@ func (s *BrowserSession) start() error {
 		return fmt.Errorf("CDP connect failed: %w", err)
 	}
 
-	fmt.Println("[PIAB] lightpanda [✅] ready")
+	fmt.Println("[PIAB] obscura [✅] ready")
 	return nil
+}
+
+func buildObscuraServeArgs(port int, proxyAddr string) []string {
+	args := []string{
+		"serve",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(port),
+		"--stealth",
+	}
+	if proxyAddr != "" {
+		args = append(args, "--proxy", proxyAddr)
+	}
+	return args
 }
 
 func (s *BrowserSession) waitForCDP() (string, error) {
@@ -141,7 +139,7 @@ func (s *BrowserSession) waitForCDP() (string, error) {
 		time.Sleep(healthCheckInterval)
 	}
 
-	return "", fmt.Errorf("lightpanda CDP not ready on port %d after %s", s.port, cdpConnectTimeout)
+	return "", fmt.Errorf("obscura CDP not ready on port %d after %s", s.port, cdpConnectTimeout)
 }
 
 func (s *BrowserSession) navigate(targetURL string) error {
@@ -199,7 +197,7 @@ func (s *BrowserSession) stop() {
 		return
 	}
 
-	fmt.Printf("[PIAB] lightpanda [🛑] stopping (pid=%d)\n", s.cmd.Process.Pid)
+	fmt.Printf("[PIAB] obscura [🛑] stopping (pid=%d)\n", s.cmd.Process.Pid)
 
 	_ = s.cmd.Process.Signal(os.Interrupt)
 
@@ -208,9 +206,9 @@ func (s *BrowserSession) stop() {
 
 	select {
 	case <-done:
-		fmt.Println("[PIAB] lightpanda [✅] stopped")
+		fmt.Println("[PIAB] obscura [✅] stopped")
 	case <-time.After(shutdownGracePeriod):
-		fmt.Println("[PIAB] lightpanda [⚠️] force killing")
+		fmt.Println("[PIAB] obscura [⚠️] force killing")
 		_ = s.cmd.Process.Kill()
 		<-done
 	}
@@ -218,7 +216,7 @@ func (s *BrowserSession) stop() {
 	s.cmd = nil
 }
 
-// startSessionWithProxy 启动带指定 proxy 的 lightpanda 实例，设置为 activeSession
+// startSessionWithProxy 启动带指定 proxy 的 Obscura 实例，设置为 activeSession
 func startSessionWithProxy(proxyAddr string) (*BrowserSession, error) {
 	session := &BrowserSession{proxyAddr: proxyAddr}
 	if err := session.start(); err != nil {
@@ -238,8 +236,8 @@ func destroyActiveSession() {
 	session.stop()
 }
 
-// BrowserFetch 启动临时 lightpanda 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
-// 优先通过代理池中的随机 proxy 启动浏览器（lightpanda --http_proxy），若导航失败则销毁 session 并用直连重试。
+// BrowserFetch 启动临时 Obscura 实例 → 导航到 URL → 等待 JS 渲染 → 返回 HTML
+// 优先通过代理池中的随机 proxy 启动浏览器（obscura --proxy），若导航失败则销毁 session 并用直连重试。
 func BrowserFetch(targetURL string) (string, error) {
 	activeSessionMu.Lock()
 
@@ -285,7 +283,7 @@ func BrowserFetch(targetURL string) (string, error) {
 		return "", fmt.Errorf("navigate to %s failed: %w", targetURL, err)
 	}
 
-	// lightpanda 加载完成后直接通过 CDP 获取 HTML，无需额外等待
+	// Obscura 加载完成后直接通过 CDP 获取 HTML，无需额外等待
 	session.mu.Lock()
 	html, err := session.evaluate("document.body.innerHTML")
 	session.mu.Unlock()
@@ -313,26 +311,30 @@ func BrowserEval(expression string) (string, error) {
 	return session.evaluate(expression)
 }
 
-// ReleaseBrowser 停止当前 lightpanda 实例，释放所有资源
+// ReleaseBrowser 停止当前 Obscura 实例，释放所有资源
 func ReleaseBrowser() {
 	activeSessionMu.Lock()
 	destroyActiveSession()
 	activeSessionMu.Unlock()
 }
 
-// StartLightpanda 兼容 test-source 子命令的预启动接口
-func StartLightpanda() error {
+// StartObscura 兼容 test-source 子命令的预启动接口
+func StartObscura() error {
 	activeSessionMu.Lock()
 	defer activeSessionMu.Unlock()
 
 	if activeSession != nil {
-		return fmt.Errorf("lightpanda already running")
+		return fmt.Errorf("obscura already running")
 	}
-	activeSession = &BrowserSession{}
-	return activeSession.start()
+	session := &BrowserSession{}
+	if err := session.start(); err != nil {
+		return err
+	}
+	activeSession = session
+	return nil
 }
 
-// StopLightpanda 兼容 test-source 子命令和信号处理的停止接口
-func StopLightpanda() {
+// StopObscura 兼容 test-source 子命令和信号处理的停止接口
+func StopObscura() {
 	ReleaseBrowser()
 }
