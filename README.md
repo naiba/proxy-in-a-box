@@ -10,7 +10,7 @@ Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources,
 ## Features
 
 - **YAML-driven sources** — All proxy sources defined as YAML configs with Lua scripting for complex logic
-- **Headless browser scraping** — Integrated [Lightpanda](https://github.com/lightpanda-io/browser) for JS-rendered pages (e.g. IPRoyal)
+- **Headless browser scraping** — Integrated [Obscura](https://github.com/h4ckf0r0day/obscura) with anti-detection enabled by default for JS-rendered pages (e.g. IPRoyal)
 - **Auto-validation** — Concurrent proxy verification with configurable worker pool
 - **Smart rotation** — Automatic proxy assignment based on domain and IP limits
 - **TLS fingerprint spoofing** — Uses uTLS to mimic Chrome browser fingerprints
@@ -105,9 +105,10 @@ sys:
 enable_mitm: false
 
 # Headless browser for JS-rendered pages (optional)
-# Requires lightpanda binary — included in Docker image
-lightpanda:
-  bin: lightpanda             # binary path (leave empty to disable)
+# Requires obscura binary — included in Docker image
+# Proxy-in-a-Box starts Obscura with --stealth by default.
+obscura:
+  bin: obscura                # binary path (leave empty to use PATH default)
 ```
 
 ## Proxy Sources
@@ -166,7 +167,7 @@ script: |
 
 ### Browser-powered scraping (for JS-rendered pages)
 
-Requires `lightpanda` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page.
+Uses `obscura` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page. Proxy-in-a-Box starts Obscura with `--stealth` by default.
 
 ```yaml
 name: iproyal
@@ -216,7 +217,7 @@ script: |
                     │  YAML Sources   │ Validators            │
                     │  text/json/lua  │ (concurrent workers)  │
                     ├─────────────────────────────────────────┤
-                    │       Lightpanda (headless browser)      │
+                    │       Obscura (headless browser)         │
                     └─────────────────────────────────────────┘
                                      │
                                      ▼
@@ -236,7 +237,7 @@ ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
 - **Language**: Go 1.25
 - **Database**: SQLite (via `glebarez/sqlite` + GORM)
 - **Scripting**: gopher-lua (Lua 5.1 VM)
-- **Browser**: [Lightpanda](https://github.com/lightpanda-io/browser)
+- **Browser**: [Obscura](https://github.com/h4ckf0r0day/obscura)
 - **TLS**: uTLS for fingerprint spoofing
 - **HTTP**: Standard library + custom MITM proxy
 

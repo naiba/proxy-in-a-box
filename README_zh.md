@@ -10,7 +10,7 @@
 ## 功能特性
 
 - **YAML 驱动的数据源** — 所有代理源通过 YAML 配置定义，支持 Lua 脚本处理复杂逻辑
-- **无头浏览器抓取** — 集成 [Lightpanda](https://github.com/lightpanda-io/browser)，处理 JS 渲染的页面（如 IPRoyal）
+- **无头浏览器抓取** — 集成 [Obscura](https://github.com/h4ckf0r0day/obscura)，默认开启防检测能力，处理 JS 渲染的页面（如 IPRoyal）
 - **自动验证** — 并发代理验证，可配置工作线程数
 - **智能轮换** — 基于域名和 IP 限制自动分配代理
 - **TLS 指纹伪装** — 使用 uTLS 模拟 Chrome 浏览器指纹
@@ -105,9 +105,10 @@ sys:
 enable_mitm: false
 
 # 无头浏览器配置（可选）
-# 需要 lightpanda 二进制 — Docker 镜像已内置
-lightpanda:
-  bin: lightpanda             # 二进制路径（留空则禁用）
+# 需要 obscura 二进制 — Docker 镜像已内置
+# Proxy-in-a-Box 默认使用 --stealth 启动 Obscura。
+obscura:
+  bin: obscura                # 二进制路径（留空则使用 PATH 默认命令）
 ```
 
 ## 代理来源
@@ -166,7 +167,7 @@ script: |
 
 ### 浏览器抓取（JS 渲染页面）
 
-需要配置 `lightpanda`。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。
+使用 `obscura` 配置。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。Proxy-in-a-Box 默认使用 `--stealth` 启动 Obscura。
 
 ```yaml
 name: iproyal
@@ -216,7 +217,7 @@ script: |
                     │  YAML 数据源    │ 验证器                │
                     │  text/json/lua  │ (并发工作线程)        │
                     ├─────────────────────────────────────────┤
-                    │       Lightpanda（无头浏览器）           │
+                    │       Obscura（无头浏览器）              │
                     └─────────────────────────────────────────┘
                                      │
                                      ▼
@@ -236,7 +237,7 @@ ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
 - **语言**：Go 1.25
 - **数据库**：SQLite（`glebarez/sqlite` + GORM）
 - **脚本引擎**：gopher-lua（Lua 5.1 VM）
-- **浏览器**：[Lightpanda](https://github.com/lightpanda-io/browser)
+- **浏览器**：[Obscura](https://github.com/h4ckf0r0day/obscura)
 - **TLS**：uTLS 指纹伪装
 - **HTTP**：标准库 + 自定义 MITM 代理
 
