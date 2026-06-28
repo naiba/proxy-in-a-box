@@ -8,8 +8,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o proxy-in-a-box ./cmd/proxy-in-a-box
 
-# Debian slim: Lightpanda is glibc-linked, Alpine musl lacks fcntl64 symbol —
-# must use glibc-based image for native compatibility.
+# Debian slim: Obscura release binaries are glibc-linked, so Alpine/musl is not compatible.
 FROM debian:bookworm-slim
 
 ARG TARGETARCH
@@ -19,10 +18,15 @@ RUN apt-get update \
        curl \
        tini \
     && rm -rf /var/lib/apt/lists/* \
-    && ARCH=$(echo "${TARGETARCH}" | sed 's/amd64/x86_64/;s/arm64/aarch64/') \
-    && curl -fsSL -o /usr/local/bin/lightpanda \
-       "https://github.com/lightpanda-io/browser/releases/download/nightly/lightpanda-${ARCH}-linux" \
-    && chmod +x /usr/local/bin/lightpanda
+    && BUILD_ARCH=${TARGETARCH:-$(uname -m)} \
+    && ARCH=$(echo "${BUILD_ARCH}" | sed 's/amd64/x86_64/;s/arm64/aarch64/') \
+    && mkdir -p /tmp/obscura \
+    && curl -fsSL -o /tmp/obscura.tar.gz \
+       "https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-${ARCH}-linux.tar.gz" \
+    && tar -xzf /tmp/obscura.tar.gz -C /tmp/obscura \
+    && install -m 0755 /tmp/obscura/obscura /usr/local/bin/obscura \
+    && install -m 0755 /tmp/obscura/obscura-worker /usr/local/bin/obscura-worker \
+    && rm -rf /tmp/obscura /tmp/obscura.tar.gz
 
 COPY --from=builder /build/proxy-in-a-box /usr/local/bin/proxy-in-a-box
 COPY docker-entrypoint.sh /usr/local/bin/
