@@ -27,3 +27,15 @@ func (ps *ProxyService) GetUnVerified() (p []proxyinabox.Proxy, e error) {
 		Find(&p).Error
 	return
 }
+
+func (ps *ProxyService) IsUnVerified(p proxyinabox.Proxy) (bool, error) {
+	var count int64
+	err := ps.DB.Model(&proxyinabox.Proxy{}).
+		Where("id = ?", p.ID).
+		Where("last_verify < ?", time.Now().Add(-proxyVerifyStaleThreshold)).
+		Where("ip NOT IN (?)",
+			ps.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),
+		).
+		Count(&count).Error
+	return count > 0, err
+}

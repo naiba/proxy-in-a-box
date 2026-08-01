@@ -26,6 +26,7 @@ type Proxy struct {
 // ProxyService proxy service
 type ProxyService interface {
 	GetUnVerified() ([]Proxy, error)
+	IsUnVerified(Proxy) (bool, error)
 }
 
 func (p *Proxy) String() string {

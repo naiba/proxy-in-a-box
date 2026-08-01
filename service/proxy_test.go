@@ -66,3 +66,34 @@ func TestGetUnVerified_RecentlyVerifiedExcluded(t *testing.T) {
 		}
 	}
 }
+
+func TestIsUnVerified_RefreshesCurrentState(t *testing.T) {
+	db := setupTestDB(t)
+	p := proxyinabox.Proxy{
+		IP: "4.4.4.4", Port: "8080", Protocol: "http", Source: "test",
+		LastVerify: time.Now().Add(-time.Hour),
+	}
+	if err := db.Create(&p).Error; err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
+	ps := &ProxyService{DB: db}
+	stale, err := ps.IsUnVerified(p)
+	if err != nil {
+		t.Fatalf("IsUnVerified error: %v", err)
+	}
+	if !stale {
+		t.Fatal("stale proxy should be unverified")
+	}
+
+	if err := db.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Update("last_verify", time.Now()).Error; err != nil {
+		t.Fatalf("refresh proxy: %v", err)
+	}
+	stale, err = ps.IsUnVerified(p)
+	if err != nil {
+		t.Fatalf("IsUnVerified after refresh error: %v", err)
+	}
+	if stale {
+		t.Fatal("fresh proxy should not be unverified")
+	}
+}
