@@ -34,14 +34,11 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		}
 	}()
 
-	ch := make(chan bool)
-	go func() {
-		clientRequestDump, err = httputil.DumpRequestOut(clientRequest, true)
-		if err != nil {
-			fmt.Println("[MITM]", "DumpRequest", "[❎]", err)
-		}
-		ch <- true
-	}()
+	clientRequestDump, err = httputil.DumpRequestOut(clientRequest, true)
+	if err != nil {
+		fmt.Println("[MITM]", "DumpRequest", "[❎]", err)
+		return
+	}
 
 	var selectedProxyURI string
 	remoteResponse, upstreamProto, selectedProxyURI, err = m.replayRequest(clientRequest)
@@ -49,14 +46,15 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		fmt.Println("[MITM]", "remoteResponse", "[❎]", err)
 		return
 	}
+	defer remoteResponse.Body.Close()
 
 	if upstreamProto != "" {
 		GlobalUpstreamStats.Get(upstreamProto).TotalRequests.Add(1)
 	}
 
-	// BUG-FIX: 上游代理返回 407（需要认证）或 403（禁止访问）说明代理本身不可用，
-	// 触发失败记录并从缓存移除，返回 502 给客户端而非转发代理的认证页面
-	if remoteResponse.StatusCode == http.StatusProxyAuthRequired || remoteResponse.StatusCode == http.StatusForbidden {
+	// HTTP 转发中的 403 也可能是目标站的正常响应，必须原样转发。CONNECT
+	// 阶段的 403/407 由 tunnelHTTPS 中的 ProxyConnectError 单独处理。
+	if remoteResponse.StatusCode == http.StatusProxyAuthRequired {
 		if m.OnProxyFailure != nil {
 			m.OnProxyFailure(selectedProxyURI)
 		}
@@ -116,7 +114,6 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		fmt.Println("[MITM]", "REQUEST-DUMP", "[📮]", string(clientRequestDump))
 		fmt.Println("[MITM]", "RESPONSE-DUMP", "[📮]", string(remoteResponseDump))
 	}
-	<-ch
 }
 
 func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, upstreamProtocol string, proxyURI string, err error) {
@@ -152,7 +149,8 @@ func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, 
 		}
 	}
 
-	clientRequest.RequestURI = ""
+	request := clientRequest.Clone(clientRequest.Context())
+	request.RequestURI = ""
 	cli := http.Client{
 		Transport: &transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -160,7 +158,7 @@ func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, 
 		},
 	}
 
-	resp, err = cli.Do(clientRequest)
+	resp, err = cli.Do(request)
 	return
 }
 
