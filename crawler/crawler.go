@@ -20,6 +20,26 @@ import (
 var ValidateJobs chan proxyinabox.Proxy
 var pendingValidate sync.Map
 
+const tlsHijackProbeTimeout = 5 * time.Second
+
+// deadlineDialer bounds both the connection to the proxy and its protocol
+// handshake, which runs inside x/net/proxy's Dial call.
+type deadlineDialer struct {
+	timeout time.Duration
+}
+
+func (d deadlineDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := net.DialTimeout(network, address, d.timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(d.timeout)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 // cloudflareTraceResult 表示 Cloudflare cdn-cgi/trace 端点的解析结果
 type cloudflareTraceResult struct {
 	IP  string
@@ -68,7 +88,7 @@ func probeTLSHijack(proxyAddr string) error {
 	if err != nil {
 		return err
 	}
-	dialer, err := xproxy.FromURL(proxyUrl, xproxy.Direct)
+	dialer, err := xproxy.FromURL(proxyUrl, deadlineDialer{timeout: tlsHijackProbeTimeout})
 	if err != nil {
 		return err
 	}
@@ -77,10 +97,17 @@ func probeTLSHijack(proxyAddr string) error {
 	if err != nil {
 		return err
 	}
+	defer conn.Close()
 	serverName, _, _ := net.SplitHostPort(probeHost)
+	return probeTLSHandshake(conn, serverName, tlsHijackProbeTimeout)
+}
+
+func probeTLSHandshake(conn net.Conn, serverName string, timeout time.Duration) error {
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
 	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 	if err != nil {
-		conn.Close()
 		return err
 	}
 	for _, ext := range spec.Extensions {
@@ -90,12 +117,9 @@ func probeTLSHijack(proxyAddr string) error {
 	}
 	uconn := utls.UClient(conn, &utls.Config{ServerName: serverName}, utls.HelloCustom)
 	if err := uconn.ApplyPreset(&spec); err != nil {
-		conn.Close()
 		return err
 	}
-	err = uconn.Handshake()
-	uconn.Close()
-	return err
+	return uconn.Handshake()
 }
 
 // GetDocFromURL fetches a URL body as string, optionally through a random proxy.
@@ -128,13 +152,22 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 		p.IP = strings.TrimSpace(p.IP)
 		proxy := p.URI()
 
-		if proxyinabox.CI.IsIPLocked(p.IP) {
+		// BUG-FIX: 使用 LoadOrStore 原子操作，防止多个 validator 同时验证同一代理。
+		// 每个成功获取的所有权都必须在本次循环结束时释放，包括代理已在缓存中的路径。
+		if _, loaded := pendingValidate.LoadOrStore(proxy, nil); loaded {
 			continue
 		}
+		func() {
+			defer pendingValidate.Delete(proxy)
 
-		// BUG-FIX: 使用 LoadOrStore 原子操作，防止多个 validator 同时验证同一代理
-		_, loaded := pendingValidate.LoadOrStore(proxy, nil)
-		if !loaded && !proxyinabox.CI.HasProxy(p.URI()) {
+			if proxyinabox.CI.IsIPLocked(p.IP) {
+				return
+			}
+
+			if proxyinabox.CI.HasProxy(proxy) {
+				return
+			}
+
 			start := time.Now().Unix()
 
 			body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*7, proxy, 3)
@@ -149,8 +182,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
 					fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
 					proxyinabox.CI.RecordFailure(p.IP)
-					pendingValidate.Delete(proxy)
-					continue
+					return
 				}
 				p.Country = trace.Loc
 				p.Delay = time.Now().Unix() - start
@@ -164,8 +196,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 					fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
 				}
 			}
-			pendingValidate.Delete(proxy)
-		}
+		}()
 	}
 }
 

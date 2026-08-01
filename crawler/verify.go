@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/naiba/proxyinabox"
@@ -10,6 +11,7 @@ import (
 
 var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
+var pendingVerify sync.Map
 
 const staleProxyThreshold = 6 * 30 * 24 * time.Hour
 
@@ -32,8 +34,26 @@ func Init() {
 }
 
 func Verify() {
-	list, _ := proxyServiceInstance.GetUnVerified()
+	list, err := proxyServiceInstance.GetUnVerified()
+	if err != nil {
+		fmt.Printf("[PIAB] verify [❎] get unverified proxies: %v\n", err)
+		return
+	}
 	for _, p := range list {
+		uri := p.URI()
+		if _, loaded := pendingVerify.LoadOrStore(uri, nil); loaded {
+			continue
+		}
+		stillUnverified, err := proxyServiceInstance.IsUnVerified(p)
+		if err != nil {
+			pendingVerify.Delete(uri)
+			fmt.Printf("[PIAB] verify [❎] refresh proxy %s state: %v\n", uri, err)
+			continue
+		}
+		if !stillUnverified {
+			pendingVerify.Delete(uri)
+			continue
+		}
 		// BUG-FIX: 阻塞投递确保所有过期代理都被验证，避免 channel 满时直接 return 导致部分代理被跳过
 		verifyJob <- p
 	}
@@ -45,33 +65,39 @@ func CleanupStaleProxies() {
 
 func getDelay(pc chan proxyinabox.Proxy) {
 	for p := range pc {
-		if proxyinabox.CI.IsIPLocked(p.IP) {
-			continue
-		}
-
 		proxy := p.URI()
-		start := time.Now().Unix()
-		body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*5, proxy, 3)
-		var trace cloudflareTraceResult
-		if err == nil {
-			trace, err = parseCloudflareTrace(body)
-		}
-		delay := time.Now().Unix() - start
-		if err != nil || trace.IP != p.IP {
-			locked := proxyinabox.CI.RecordFailure(p.IP)
-			if !locked {
-				proxyinabox.CI.MarkVerifyFailed(p)
+		func() {
+			// Verify acquires this key before enqueuing. Release it on every worker
+			// exit path so future cron runs can retry the proxy.
+			defer pendingVerify.Delete(proxy)
+
+			if proxyinabox.CI.IsIPLocked(p.IP) {
+				return
 			}
-			continue
-		}
-		if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
-			fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
-			locked := proxyinabox.CI.RecordFailure(p.IP)
-			if !locked {
-				proxyinabox.CI.MarkVerifyFailed(p)
+
+			start := time.Now().Unix()
+			body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*5, proxy, 3)
+			var trace cloudflareTraceResult
+			if err == nil {
+				trace, err = parseCloudflareTrace(body)
 			}
-			continue
-		}
-		proxyinabox.CI.MarkVerifySuccess(p, delay, time.Now())
+			delay := time.Now().Unix() - start
+			if err != nil || trace.IP != p.IP {
+				locked := proxyinabox.CI.RecordFailure(p.IP)
+				if !locked {
+					proxyinabox.CI.MarkVerifyFailed(p)
+				}
+				return
+			}
+			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+				fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
+				locked := proxyinabox.CI.RecordFailure(p.IP)
+				if !locked {
+					proxyinabox.CI.MarkVerifyFailed(p)
+				}
+				return
+			}
+			proxyinabox.CI.MarkVerifySuccess(p, delay, time.Now())
+		}()
 	}
 }
