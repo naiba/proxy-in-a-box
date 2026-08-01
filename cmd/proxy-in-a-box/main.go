@@ -154,9 +154,13 @@ var rootCmd = &cobra.Command{
 		crawler.CleanupStaleProxies()
 
 		c := cron.New(cron.WithSeconds())
-		// BUG-FIX: Verify() 只是轻量地查询过期代理并投递到 worker channel，高频调度不会造成资源压力。
-		// 每 5 分钟拉取一次，确保过期代理能及时被重新验证
-		c.AddFunc("@every 5m", crawler.Verify)
+		// 每 5 分钟拉取一次，确保过期代理能及时被重新验证；前一轮尚未
+		// 完成时跳过本轮，避免重复投递陈旧代理。
+		verifyCronJob := skipIfStillRunning(crawler.Verify)
+		if _, err := c.AddJob("@every 5m", verifyCronJob); err != nil {
+			fmt.Println("[PIAB] cron [❎] add verify job:", err)
+			os.Exit(1)
+		}
 		// 每天凌晨清理超过 6 个月未验证的陈旧代理记录
 		c.AddFunc("0 0 3 * * *", crawler.CleanupStaleProxies)
 		c.Start()
@@ -305,6 +309,10 @@ func main() {
 		fmt.Println("[PIAB]", "panic", "[👻]", err)
 		os.Exit(1)
 	}
+}
+
+func skipIfStillRunning(job func()) cron.Job {
+	return cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(job))
 }
 
 func newMITM() *mitm.MITM {
