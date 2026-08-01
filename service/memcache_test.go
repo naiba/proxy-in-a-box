@@ -196,6 +196,89 @@ func TestMarkVerifySuccess_UpdatesDBAndCache(t *testing.T) {
 	}
 }
 
+func TestMarkVerifySuccess_RestoresRemovedProxyWithStoredMetadata(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	oldTime := time.Now().Add(-time.Hour)
+	p := proxyinabox.Proxy{
+		IP: "1.1.1.2", Port: "8080", Protocol: "http",
+		Country: "US", Provence: "CA", Source: "source-a", Delay: 99, LastVerify: oldTime,
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy failed: %v", err)
+	}
+
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+		t.Fatalf("load stored proxy: %v", err)
+	}
+	c.MarkVerifyFailed(stored)
+	if c.ProxyLength() != 0 {
+		t.Fatalf("ProxyLength = %d after failure, want 0", c.ProxyLength())
+	}
+
+	verifiedAt := time.Now().Round(0)
+	c.MarkVerifySuccess(stored, 12, verifiedAt)
+
+	all := c.GetAllProxies()
+	if len(all) != 1 {
+		t.Fatalf("GetAllProxies = %d after successful re-verification, want 1", len(all))
+	}
+	restored := all[0]
+	if restored.ID != stored.ID {
+		t.Errorf("restored ID = %d, want %d", restored.ID, stored.ID)
+	}
+	if restored.Country != stored.Country || restored.Provence != stored.Provence || restored.Source != stored.Source {
+		t.Errorf("restored metadata = {%q %q %q}, want {%q %q %q}", restored.Country, restored.Provence, restored.Source, stored.Country, stored.Provence, stored.Source)
+	}
+	if restored.Delay != 12 || !restored.LastVerify.Equal(verifiedAt) {
+		t.Errorf("restored verification = {delay:%d time:%v}, want {delay:12 time:%v}", restored.Delay, restored.LastVerify, verifiedAt)
+	}
+}
+
+func TestMarkVerifySuccess_DoesNotUndoActiveIPLock(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "1.1.1.3", Port: "8080", Protocol: "http",
+		Source: "source-a", LastVerify: time.Now().Add(-time.Hour),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy failed: %v", err)
+	}
+
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+		t.Fatalf("load stored proxy: %v", err)
+	}
+	for range proxyFailureLockThreshold {
+		c.RecordFailure(p.IP)
+	}
+	if !c.IsIPLocked(p.IP) {
+		t.Fatal("precondition: IP should be locked")
+	}
+
+	c.MarkVerifySuccess(stored, 10, time.Now())
+
+	if !c.IsIPLocked(p.IP) {
+		t.Fatal("successful stale verification must not clear an active IP lock")
+	}
+	if c.ProxyLength() != 0 {
+		t.Fatalf("ProxyLength = %d, want 0 for locked IP", c.ProxyLength())
+	}
+	var blockedCount int64
+	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", p.IP).Count(&blockedCount)
+	if blockedCount != 1 {
+		t.Fatalf("blocked_ips count = %d, want 1", blockedCount)
+	}
+	var proxyCount int64
+	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("ip = ?", p.IP).Count(&proxyCount)
+	if proxyCount != 0 {
+		t.Fatalf("proxy DB count = %d, want 0 after lock", proxyCount)
+	}
+}
+
 // --- MarkVerifyFailed ---
 
 func TestMarkVerifyFailed_RemovesFromCacheKeepsDB(t *testing.T) {

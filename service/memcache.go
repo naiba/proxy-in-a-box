@@ -268,12 +268,26 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 }
 
 func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTime time.Time) {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
+	if c.IsIPLocked(p.IP) {
+		return
+	}
+
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 
-	c.clearFailureLocked(p.IP)
 	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
-	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{"delay": delay, "last_verify": verifyTime})
+	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{"delay": delay, "last_verify": verifyTime})
+	if result.Error != nil {
+		fmt.Printf("[PIAB] verify [❎] update proxy %s: %v\n", p.URI(), result.Error)
+		return
+	}
+	if result.RowsAffected != 1 {
+		fmt.Printf("[PIAB] verify [⚠️] proxy %s no longer exists in database\n", p.URI())
+		return
+	}
 
 	// BUG-FIX: 按 URI 精确匹配内存 entry，而非按 IP 匹配后 early return。
 	// 旧逻辑按 IP 匹配找到第一个就 return，同 IP 不同端口的其他 entry 的
@@ -281,11 +295,23 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	uri := p.URI()
 	for _, e := range c.proxies.pl {
 		if e.p.URI() == uri {
+			c.clearFailureLocked(p.IP)
 			e.p.Delay = delay
 			e.p.LastVerify = verifyTime
 			return
 		}
 	}
+
+	// 验证失败会暂时从内存移除，但仍保留 SQLite 记录。定期验证随后成功时，
+	// 从 DB 重新加载完整行，以保留来源、地区等元数据后恢复到缓存。
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("id = ?", p.ID).First(&stored).Error; err != nil {
+		fmt.Printf("[PIAB] verify [❎] reload proxy %s: %v\n", p.URI(), err)
+		return
+	}
+	c.clearFailureLocked(p.IP)
+	c.proxies.pl = append(c.proxies.pl, &proxyEntry{p: &stored})
+	c.proxies.index[uri] = struct{}{}
 }
 
 func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
