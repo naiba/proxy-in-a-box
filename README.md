@@ -1,6 +1,6 @@
 # Proxy-in-a-Box
 
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
 Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources, validates them, and provides HTTP/HTTPS proxy servers with automatic rotation and TLS fingerprint spoofing.
@@ -83,7 +83,7 @@ Management Dashboard & API:
 GET /             — Web dashboard (pool overview, proxy list, source status)
 GET /stat         — Pool statistics (plain text)
 GET /get          — Get one available proxy
-GET /api/stats    — Pool statistics (JSON: totals, by protocol/source, blocked IPs, request stats)
+GET /api/stats    — Pool statistics (JSON: available/quarantined totals, by protocol/source, blocked IPs, request stats)
 GET /api/proxies  — Full proxy list (JSON)
 GET /api/sources  — Source fetch statuses (JSON)
 ```
@@ -105,7 +105,7 @@ sys:
 enable_mitm: false
 
 # Headless browser for JS-rendered pages (optional)
-# Requires obscura binary — included in Docker image
+# Requires Obscura v0.2.1+ with the stealth build feature — included in the Docker image
 # Proxy-in-a-Box starts Obscura with --stealth by default.
 obscura:
   bin: obscura                # binary path (leave empty to use PATH default)
@@ -167,7 +167,7 @@ script: |
 
 ### Browser-powered scraping (for JS-rendered pages)
 
-Uses `obscura` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page. Proxy-in-a-Box starts Obscura with `--stealth` by default.
+Uses `obscura` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page. Proxy-in-a-Box starts the stealth-enabled Obscura build with `--stealth` and aligns Obscura's navigation, script, fetch, and CDP deadlines with the 60-second client timeout.
 
 ```yaml
 name: iproyal

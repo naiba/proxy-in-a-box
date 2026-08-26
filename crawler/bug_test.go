@@ -26,6 +26,7 @@ func (c *testCache) GetAllProxies() []proxyinabox.Proxy                    { ret
 func (c *testCache) UpsertProxy(proxyinabox.Proxy) error                   { return nil }
 func (c *testCache) MarkVerifySuccess(proxyinabox.Proxy, int64, time.Time) {}
 func (c *testCache) MarkVerifyFailed(proxyinabox.Proxy)                    {}
+func (c *testCache) MarkProxyUnavailable(string)                           {}
 func (c *testCache) RecordFailure(string) bool                             { return false }
 func (c *testCache) LoadLockedIPs()                                        {}
 func (c *testCache) CleanupStaleProxies(time.Duration)                     {}

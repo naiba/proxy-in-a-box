@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/naiba/proxyinabox"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Source represents a YAML-driven proxy source configuration

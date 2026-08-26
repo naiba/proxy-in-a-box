@@ -1,6 +1,6 @@
 # Proxy-in-a-Box
 
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naiba/proxyinabox)](https://goreportcard.com/report/github.com/naiba/proxyinabox)
 
 自动化代理池，专为网页爬虫设计。通过 YAML 配置定义代理源，自动抓取和验证代理，提供 HTTP/HTTPS 代理服务，支持自动轮换和 TLS 指纹伪装。
@@ -83,7 +83,7 @@ HTTPS 代理: https://127.0.0.1:8081
 GET /             — Web 管理面板（代理池概览、代理列表、数据源状态）
 GET /stat         — 代理池统计（纯文本）
 GET /get          — 获取一个可用代理
-GET /api/stats    — 代理池统计（JSON：总数、按协议/来源分类、封禁 IP、请求统计）
+GET /api/stats    — 代理池统计（JSON：可用/隔离数量、按协议/来源分类、封禁 IP、请求统计）
 GET /api/proxies  — 全量代理列表（JSON）
 GET /api/sources  — 各数据源抓取状态（JSON）
 ```
@@ -105,7 +105,7 @@ sys:
 enable_mitm: false
 
 # 无头浏览器配置（可选）
-# 需要 obscura 二进制 — Docker 镜像已内置
+# 需要带 stealth 构建特性的 Obscura v0.2.1+ — Docker 镜像已内置
 # Proxy-in-a-Box 默认使用 --stealth 启动 Obscura。
 obscura:
   bin: obscura                # 二进制路径（留空则使用 PATH 默认命令）
@@ -167,7 +167,7 @@ script: |
 
 ### 浏览器抓取（JS 渲染页面）
 
-使用 `obscura` 配置。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。Proxy-in-a-Box 默认使用 `--stealth` 启动 Obscura。
+使用 `obscura` 配置。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。Proxy-in-a-Box 默认使用带 stealth 构建特性的 Obscura 并传入 `--stealth`，同时将 Obscura 的导航、脚本、网络和 CDP 超时与客户端的 60 秒超时对齐。
 
 ```yaml
 name: iproyal

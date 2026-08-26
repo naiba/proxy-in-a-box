@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -41,6 +42,25 @@ type BrowserSession struct {
 	mu        sync.Mutex
 }
 
+// obscuraCDPClient hides optional CDP calls that Obscura does not implement.
+// Rod intentionally ignores Page.stopLoading errors before navigation, but
+// sending the command still makes Obscura emit a warning for every page load.
+type obscuraCDPClient struct {
+	rod.CDPClient
+}
+
+func (c *obscuraCDPClient) Call(
+	ctx context.Context,
+	sessionID, method string,
+	params interface{},
+) ([]byte, error) {
+	if method == (proto.PageStopLoading{}).ProtoReq() {
+		return []byte(`{}`), nil
+	}
+
+	return c.CDPClient.Call(ctx, sessionID, method, params)
+}
+
 // 当前活跃 session（每个 runScript goroutine 通过 goroutine-local 模式使用）
 var (
 	activeSession   *BrowserSession
@@ -78,6 +98,7 @@ func (s *BrowserSession) start() error {
 	s.cmd = exec.Command(cfg.Bin, args...)
 	s.cmd.Stdout = os.Stdout
 	s.cmd.Stderr = os.Stderr
+	s.cmd.Env = buildObscuraEnv(os.Environ())
 
 	if err := s.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start obscura: %w", err)
@@ -103,7 +124,7 @@ func (s *BrowserSession) start() error {
 	s.cdpWS = ws
 
 	cdpClient := cdp.New().Start(ws)
-	s.browser = rod.New().Client(cdpClient)
+	s.browser = rod.New().Client(&obscuraCDPClient{CDPClient: cdpClient})
 	if err := s.browser.Connect(); err != nil {
 		s.stop()
 		return fmt.Errorf("CDP connect failed: %w", err)
@@ -111,6 +132,19 @@ func (s *BrowserSession) start() error {
 
 	fmt.Println("[PIAB] obscura [✅] ready")
 	return nil
+}
+
+func buildObscuraEnv(base []string) []string {
+	navigationTimeoutMS := strconv.FormatInt(pageNavigationTimeout.Milliseconds(), 10)
+	commandTimeoutMS := strconv.FormatInt((pageNavigationTimeout + 5*time.Second).Milliseconds(), 10)
+
+	return append(base,
+		"OBSCURA_NAV_TIMEOUT_MS="+navigationTimeoutMS,
+		"OBSCURA_SCRIPT_DEADLINE_MS="+navigationTimeoutMS,
+		"OBSCURA_FETCH_TIMEOUT_MS="+navigationTimeoutMS,
+		"OBSCURA_CDP_COMMAND_TIMEOUT_MS="+commandTimeoutMS,
+		"OBSCURA_MODULE_BUDGET_MS=10000",
+	)
 }
 
 func buildObscuraServeArgs(port int, proxyAddr string) []string {
@@ -144,23 +178,74 @@ func (s *BrowserSession) waitForCDP() (string, error) {
 
 func (s *BrowserSession) navigate(targetURL string) error {
 	// 每次导航创建新的 page target，确保隔离
-	if s.page != nil {
-		_ = s.page.Close()
-		s.page = nil
+	if err := s.closePage(); err != nil {
+		return fmt.Errorf("close previous page failed: %w", err)
 	}
 
-	page, err := s.browser.Page(proto.TargetCreateTarget{URL: targetURL})
+	// Create an attached about:blank target first, then navigate with Obscura's
+	// waitUntil extension. Rod's Page.WaitLoad injects a browser helper that is
+	// incompatible with Obscura v0.2.1; Obscura's Page.navigate is synchronous
+	// and provides the stronger server-side load guarantee directly.
+	page, err := s.browser.Page(proto.TargetCreateTarget{})
 	if err != nil {
 		return fmt.Errorf("create page failed: %w", err)
 	}
+	s.page = page
 
-	err = page.Timeout(pageNavigationTimeout).WaitLoad()
-	if err != nil {
-		_ = page.Close()
-		return fmt.Errorf("wait load failed for %s: %w", targetURL, err)
+	if err := navigateObscuraPage(page, targetURL); err != nil {
+		_ = s.closePage()
+		return fmt.Errorf("navigate to %s: %w", targetURL, err)
 	}
 
-	s.page = page
+	return nil
+}
+
+type obscuraNavigateParams struct {
+	URL       string `json:"url"`
+	WaitUntil string `json:"waitUntil"`
+}
+
+func navigateObscuraPage(page *rod.Page, targetURL string) error {
+	ctx, cancel := context.WithTimeout(page.GetContext(), pageNavigationTimeout)
+	defer cancel()
+
+	data, err := page.Call(ctx, string(page.SessionID), "Page.navigate", obscuraNavigateParams{
+		URL:       targetURL,
+		WaitUntil: "load",
+	})
+	if err != nil {
+		return err
+	}
+
+	var result proto.PageNavigateResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return fmt.Errorf("decode Page.navigate result: %w", err)
+	}
+	if result.ErrorText != "" {
+		return fmt.Errorf("navigation failed: %s", result.ErrorText)
+	}
+	return nil
+}
+
+// closePage uses Target.closeTarget because Obscura does not implement
+// Page.close. The target-level command also avoids leaking old pages between
+// browser_fetch calls.
+func (s *BrowserSession) closePage() error {
+	if s.page == nil {
+		return nil
+	}
+
+	page := s.page
+	result, err := (proto.TargetCloseTarget{TargetID: page.TargetID}).Call(s.browser)
+	if err != nil {
+		return err
+	}
+	if !result.Success {
+		return fmt.Errorf("Obscura did not close target %s", page.TargetID)
+	}
+
+	s.browser.RemoveState(page.TargetID)
+	s.page = nil
 	return nil
 }
 
@@ -178,15 +263,18 @@ func (s *BrowserSession) evaluate(expression string) (string, error) {
 }
 
 func (s *BrowserSession) stop() {
-	if s.page != nil {
-		_ = s.page.Close()
-		s.page = nil
+	_ = s.closePage()
+
+	// Obscura v0.2.1 treats Browser.close as a graceful WebSocket shutdown.
+	// Send it before closing the underlying socket to avoid its
+	// "connection reset without closing handshake" warning.
+	if s.browser != nil && s.cdpWS != nil {
+		_ = s.browser.Timeout(time.Second).Close()
 	}
 
-	// BUG-FIX: 必须在杀进程之前关闭 WebSocket，否则 go-rod 的 consumeMessages goroutine
-	// 会在进程退出时读到非 JSON 数据（如 \x03 ETX），触发 utils.E() panic。
-	// 关闭 WebSocket 后 ws.Read() 返回 error，consumeMessages 走正常退出路径。
-	// recover 无法捕获其他 goroutine 的 panic，所以必须从源头阻断。
+	// The explicit transport close is still required as a fallback before the
+	// child process is interrupted. Otherwise Rod's consumeMessages goroutine
+	// can attempt to decode process-shutdown bytes as a CDP message.
 	if s.cdpWS != nil {
 		_ = s.cdpWS.Close()
 		s.cdpWS = nil

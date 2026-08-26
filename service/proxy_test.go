@@ -67,6 +67,28 @@ func TestGetUnVerified_RecentlyVerifiedExcluded(t *testing.T) {
 	}
 }
 
+func TestGetUnVerified_IncludesUnavailableProxyWhenRetryIsDue(t *testing.T) {
+	db := setupTestDB(t)
+	p := proxyinabox.Proxy{
+		IP: "3.3.3.4", Port: "8080", Protocol: "http", Source: "test",
+		LastVerify: time.Now().Add(-time.Hour),
+	}
+	if err := db.Create(&p).Error; err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := db.Model(&p).Update("available", false).Error; err != nil {
+		t.Fatalf("mark unavailable: %v", err)
+	}
+
+	proxies, err := (&ProxyService{DB: db}).GetUnVerified()
+	if err != nil {
+		t.Fatalf("GetUnVerified error: %v", err)
+	}
+	if len(proxies) != 1 || proxies[0].ID != p.ID {
+		t.Fatalf("GetUnVerified = %#v, want quarantined proxy ID %d", proxies, p.ID)
+	}
+}
+
 func TestIsUnVerified_RefreshesCurrentState(t *testing.T) {
 	db := setupTestDB(t)
 	p := proxyinabox.Proxy{

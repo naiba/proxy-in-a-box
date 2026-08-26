@@ -2,6 +2,10 @@ package proxyinabox
 
 import (
 	"testing"
+	"time"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestProxyURI(t *testing.T) {
@@ -38,6 +42,46 @@ func TestProxyURI(t *testing.T) {
 				t.Errorf("URI() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestProxyAvailabilityMigrationDefaultsExistingRowsToAvailable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE proxies (
+		id integer PRIMARY KEY AUTOINCREMENT,
+		created_at datetime,
+		updated_at datetime,
+		deleted_at datetime,
+		ip text,
+		port text,
+		country text,
+		provence text,
+		source text,
+		protocol text,
+		delay integer,
+		last_verify datetime
+	)`).Error; err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Exec(
+		"INSERT INTO proxies (ip, port, protocol, last_verify) VALUES (?, ?, ?, ?)",
+		"1.2.3.4", "8080", "http", time.Now(),
+	).Error; err != nil {
+		t.Fatalf("insert legacy proxy: %v", err)
+	}
+
+	if err := db.AutoMigrate(&Proxy{}); err != nil {
+		t.Fatalf("migrate Proxy: %v", err)
+	}
+	var migrated Proxy
+	if err := db.First(&migrated).Error; err != nil {
+		t.Fatalf("load migrated proxy: %v", err)
+	}
+	if !migrated.Available {
+		t.Fatal("legacy proxy should default to available after migration")
 	}
 }
 

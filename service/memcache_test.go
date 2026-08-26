@@ -274,8 +274,13 @@ func TestMarkVerifySuccess_DoesNotUndoActiveIPLock(t *testing.T) {
 	}
 	var proxyCount int64
 	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("ip = ?", p.IP).Count(&proxyCount)
-	if proxyCount != 0 {
-		t.Fatalf("proxy DB count = %d, want 0 after lock", proxyCount)
+	if proxyCount != 1 {
+		t.Fatalf("proxy DB count = %d, want 1 quarantined row after lock", proxyCount)
+	}
+	var quarantined proxyinabox.Proxy
+	proxyinabox.DB.Where("ip = ?", p.IP).First(&quarantined)
+	if quarantined.Available {
+		t.Fatal("proxy should remain unavailable while its IP lock is active")
 	}
 }
 
@@ -311,6 +316,9 @@ func TestMarkVerifyFailed_RemovesFromCacheKeepsDB(t *testing.T) {
 	if !updated.LastVerify.After(oldTime) {
 		t.Error("DB last_verify should be updated to prevent re-selection")
 	}
+	if updated.Available {
+		t.Error("failed proxy should be persisted as unavailable")
+	}
 }
 
 // --- RecordFailure ---
@@ -341,7 +349,7 @@ func TestRecordFailure_BelowThreshold(t *testing.T) {
 	}
 }
 
-func TestRecordFailure_AtThreshold_DeletesDBAndCache(t *testing.T) {
+func TestRecordFailure_AtThreshold_QuarantinesDBAndCache(t *testing.T) {
 	setupTestDB(t)
 	c := newTestCache(t)
 
@@ -363,14 +371,64 @@ func TestRecordFailure_AtThreshold_DeletesDBAndCache(t *testing.T) {
 
 	var proxyCount int64
 	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("ip = ?", "5.6.7.8").Count(&proxyCount)
-	if proxyCount != 0 {
-		t.Errorf("DB proxy count = %d, want 0 (RecordFailure should delete proxies on lock)", proxyCount)
+	if proxyCount != 1 {
+		t.Errorf("DB proxy count = %d, want 1 quarantined row", proxyCount)
+	}
+	var quarantined proxyinabox.Proxy
+	proxyinabox.DB.Where("ip = ?", "5.6.7.8").First(&quarantined)
+	if quarantined.Available {
+		t.Error("proxy should be marked unavailable at the lock threshold")
 	}
 
 	var b proxyinabox.BlockedIP
 	proxyinabox.DB.First(&b, "ip = ?", "5.6.7.8")
 	if b.LockedUntil.Before(time.Now()) {
 		t.Error("LockedUntil should be in the future")
+	}
+}
+
+func TestQuarantinedProxyRecoversAfterLockExpires(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "5.6.7.9", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now().Add(-time.Hour),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy: %v", err)
+	}
+	for range proxyFailureLockThreshold {
+		c.RecordFailure(p.IP)
+	}
+
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+		t.Fatalf("load quarantined proxy: %v", err)
+	}
+	if stored.Available {
+		t.Fatal("precondition: proxy should be quarantined")
+	}
+
+	expired := time.Now().Add(-time.Minute)
+	c.lockedIPs.Store(p.IP, expired)
+	if err := proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", p.IP).Update("locked_until", expired).Error; err != nil {
+		t.Fatalf("expire lock: %v", err)
+	}
+	c.MarkVerifySuccess(stored, 4, time.Now())
+
+	if !c.HasProxy(p.URI()) {
+		t.Fatal("successful health check should restore the proxy after lock expiry")
+	}
+	if err := proxyinabox.DB.Where("id = ?", stored.ID).First(&stored).Error; err != nil {
+		t.Fatalf("reload recovered proxy: %v", err)
+	}
+	if !stored.Available {
+		t.Fatal("recovered proxy should be persisted as available")
+	}
+	var failures int64
+	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", p.IP).Count(&failures)
+	if failures != 0 {
+		t.Fatalf("failure rows = %d, want 0 after recovery", failures)
 	}
 }
 
@@ -400,6 +458,31 @@ func TestRecordFailure_NotClearedByUpsertProxy(t *testing.T) {
 	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", "10.0.0.1").Count(&count)
 	if count != 1 {
 		t.Errorf("blocked_ips count = %d, want 1 (lock should not be cleared)", count)
+	}
+}
+
+func TestUpsertProxy_ClearsSubThresholdFailures(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "10.0.0.2", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("initial UpsertProxy: %v", err)
+	}
+	c.RecordFailure(p.IP)
+	c.RecordFailure(p.IP)
+
+	p.LastVerify = time.Now()
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("successful revalidation UpsertProxy: %v", err)
+	}
+
+	var count int64
+	proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", p.IP).Count(&count)
+	if count != 0 {
+		t.Fatalf("failure rows = %d, want 0 after successful revalidation", count)
 	}
 }
 
@@ -503,6 +586,28 @@ func TestCleanupStaleProxies_NoStale(t *testing.T) {
 	}
 }
 
+func TestCleanupStaleProxies_OnlyRemovesStaleURIForSharedIP(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	c.UpsertProxy(proxyinabox.Proxy{
+		IP: "3.3.3.4", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now().Add(-7 * 30 * 24 * time.Hour),
+	})
+	c.UpsertProxy(proxyinabox.Proxy{
+		IP: "3.3.3.4", Port: "3128", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	})
+
+	c.CleanupStaleProxies(6 * 30 * 24 * time.Hour)
+
+	if c.HasProxy("http://3.3.3.4:8080") {
+		t.Fatal("stale endpoint should be removed")
+	}
+	if !c.HasProxy("http://3.3.3.4:3128") {
+		t.Fatal("fresh endpoint sharing the same IP should remain")
+	}
+}
+
 // --- Load ---
 
 func TestLoadExcludesBlockedIPs(t *testing.T) {
@@ -536,6 +641,56 @@ func TestLoadExcludesBlockedIPs(t *testing.T) {
 	}
 	if c.HasProxy("http://2.2.2.2:8080") {
 		t.Error("blocked proxy should not be loaded")
+	}
+}
+
+func TestLoadExcludesPersistedUnavailableProxies(t *testing.T) {
+	db := setupTestDB(t)
+	p := proxyinabox.Proxy{
+		IP: "3.3.3.5", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	}
+	if err := db.Create(&p).Error; err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := db.Model(&p).Update("available", false).Error; err != nil {
+		t.Fatalf("mark unavailable: %v", err)
+	}
+
+	c := newTestCache(t)
+	c.load()
+	if c.ProxyLength() != 0 {
+		t.Fatalf("ProxyLength = %d, want 0 for persisted unavailable proxy", c.ProxyLength())
+	}
+}
+
+func TestMarkProxyUnavailablePersistsAcrossReload(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "3.3.3.6", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy: %v", err)
+	}
+
+	c.MarkProxyUnavailable(p.URI())
+	if c.ProxyLength() != 0 {
+		t.Fatalf("ProxyLength = %d after quarantine, want 0", c.ProxyLength())
+	}
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+		t.Fatalf("load stored proxy: %v", err)
+	}
+	if stored.Available {
+		t.Fatal("quarantine was not persisted")
+	}
+
+	reloaded := newTestCache(t)
+	reloaded.load()
+	if reloaded.ProxyLength() != 0 {
+		t.Fatalf("reloaded ProxyLength = %d, unavailable proxy must not return after restart", reloaded.ProxyLength())
 	}
 }
 

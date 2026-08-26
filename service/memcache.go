@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"sync"
@@ -9,12 +10,13 @@ import (
 	"time"
 
 	"github.com/naiba/proxyinabox"
-	"math/rand/v2"
 )
 
 const (
 	proxyFailureLockThreshold = 3
-	proxyFailureLockDuration  = 15 * 24 * time.Hour
+	// A 15-day lock made transient public-proxy failures effectively permanent.
+	// Six hours still stops hot retry loops while allowing automatic recovery.
+	proxyFailureLockDuration = 6 * time.Hour
 )
 
 type proxyEntry struct {
@@ -81,7 +83,7 @@ func (c *MemCache) load() {
 	) AND deleted_at IS NULL`)
 
 	var ps []proxyinabox.Proxy
-	err := proxyinabox.DB.Where("ip NOT IN (?)",
+	err := proxyinabox.DB.Where("available = ?", true).Where("ip NOT IN (?)",
 		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),
 	).Find(&ps).Error
 	if err != nil {
@@ -229,6 +231,9 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 // --- 代理生命周期 ---
 
 func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 
@@ -243,6 +248,7 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 	if p.Protocol == "" {
 		p.Protocol = "http"
 	}
+	p.Available = true
 
 	// BUG-FIX: 先查 DB 中是否已有相同 (IP, Port, Protocol) 的记录。
 	// 若有则复用其主键以触发 UPDATE 而非 INSERT，避免 uniqueIndex 冲突。
@@ -264,6 +270,9 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 	}
 	c.proxies.pl = append(c.proxies.pl, &proxyEntry{p: &p, n: 0})
 	c.proxies.index[uri] = struct{}{}
+	// A successful source validation is a genuine health success. Clear any
+	// sub-threshold failures so they cannot accumulate across successful runs.
+	c.clearFailureLocked(p.IP)
 	return nil
 }
 
@@ -279,7 +288,11 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	defer c.proxies.l.Unlock()
 
 	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
-	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{"delay": delay, "last_verify": verifyTime})
+	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
+		"available":   true,
+		"delay":       delay,
+		"last_verify": verifyTime,
+	})
 	if result.Error != nil {
 		fmt.Printf("[PIAB] verify [❎] update proxy %s: %v\n", p.URI(), result.Error)
 		return
@@ -296,6 +309,7 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	for _, e := range c.proxies.pl {
 		if e.p.URI() == uri {
 			c.clearFailureLocked(p.IP)
+			e.p.Available = true
 			e.p.Delay = delay
 			e.p.LastVerify = verifyTime
 			return
@@ -315,14 +329,64 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 }
 
 func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
+	verifyTime := time.Now()
+	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
+		"available":   false,
+		"last_verify": verifyTime,
+	})
+	if result.Error != nil {
+		fmt.Printf("[PIAB] verify [❎] persist failed proxy %s: %v\n", p.URI(), result.Error)
+		return
+	}
+	if result.RowsAffected != 1 {
+		fmt.Printf("[PIAB] verify [⚠️] failed proxy %s no longer exists in database\n", p.URI())
+		return
+	}
+
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
 
 	// BUG-FIX: 只移除验证失败的特定代理（按 URI），而非同 IP 的所有端口。
 	// 旧逻辑 removeFromCacheLocked(ip) 会误删同 IP 其他正常端口的代理。
 	c.removeByURIFromCacheLocked(p.URI())
-	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
-	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Update("last_verify", time.Now())
+}
+
+func (c *MemCache) MarkProxyUnavailable(proxyURI string) {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
+	c.proxies.l.Lock()
+	defer c.proxies.l.Unlock()
+
+	var proxyID uint
+	for _, entry := range c.proxies.pl {
+		if entry.p.URI() == proxyURI {
+			proxyID = entry.p.ID
+			break
+		}
+	}
+	if proxyID == 0 {
+		return
+	}
+
+	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", proxyID).Updates(map[string]interface{}{
+		"available":   false,
+		"last_verify": time.Now(),
+	})
+	if result.Error != nil {
+		fmt.Printf("[PIAB] proxy [❎] quarantine %s: %v\n", proxyURI, result.Error)
+		return
+	}
+	if result.RowsAffected != 1 {
+		fmt.Printf("[PIAB] proxy [⚠️] cannot quarantine missing proxy %s\n", proxyURI)
+		return
+	}
+
+	c.removeByURIFromCacheLocked(proxyURI)
+	fmt.Printf("[PIAB] proxy [⚠️] quarantined %s after an upstream authentication/forbidden response\n", proxyURI)
 }
 
 func (c *MemCache) RecordFailure(ip string) bool {
@@ -340,13 +404,13 @@ func (c *MemCache) RecordFailure(ip string) bool {
 	if locked {
 		b.LockedUntil = time.Now().Add(proxyFailureLockDuration)
 		c.lockedIPs.Store(ip, b.LockedUntil)
-		// BUG-FIX: 锁定时同时从 proxies 表和内存缓存删除该 IP 的所有记录，
-		// 保证 DB 和内存一致。解锁后源站重新抓取并验证成功时会重新写入。
-		proxyinabox.DB.Unscoped().Where("ip = ?", ip).Delete(&proxyinabox.Proxy{})
+		// Persist quarantine instead of deleting the proxy rows. After the lock
+		// expires, periodic verification can recover endpoints that became healthy.
+		proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("ip = ?", ip).Update("available", false)
 		c.proxies.l.Lock()
 		c.removeFromCacheLocked(ip)
 		c.proxies.l.Unlock()
-		fmt.Printf("[PIAB] IP [🔒] %s locked for 15 days after %d consecutive failures\n", ip, b.ConsecutiveFailures)
+		fmt.Printf("[PIAB] IP [🔒] %s quarantined for %s after %d consecutive health-check failures\n", ip, proxyFailureLockDuration, b.ConsecutiveFailures)
 	}
 	proxyinabox.DB.Save(&b)
 	return locked
@@ -374,6 +438,9 @@ func (c *MemCache) LoadLockedIPs() {
 }
 
 func (c *MemCache) CleanupStaleProxies(threshold time.Duration) {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+
 	cutoff := time.Now().Add(-threshold)
 
 	var staleProxies []proxyinabox.Proxy
@@ -391,7 +458,7 @@ func (c *MemCache) CleanupStaleProxies(threshold time.Duration) {
 
 	c.proxies.l.Lock()
 	for _, p := range staleProxies {
-		c.removeFromCacheLocked(p.IP)
+		c.removeByURIFromCacheLocked(p.URI())
 	}
 	c.proxies.l.Unlock()
 

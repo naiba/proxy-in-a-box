@@ -25,11 +25,16 @@ type Cache interface {
 	MarkVerifySuccess(p Proxy, delay int64, verifyTime time.Time)
 
 	// MarkVerifyFailed 已有代理定期验证失败但未达锁定阈值时调用。
-	// 原子完成：从内存移除 → 更新 DB last_verify 防止反复被选中。
+	// 原子完成：在 DB 中持久化不可用状态 → 从内存移除。
 	MarkVerifyFailed(p Proxy)
 
+	// MarkProxyUnavailable 处理代理自身明确返回 403/407 的情况。
+	// 按 URI 隔离单个端点，等待定期健康检查恢复，不累计为整 IP 封禁。
+	MarkProxyUnavailable(proxyURI string)
+
 	// RecordFailure 代理请求或验证失败时调用，累计失败次数。
-	// 达到阈值时锁定 IP 并从 DB + 内存中删除该 IP 的所有代理。
+	// 达到阈值时锁定 IP，并将该 IP 的代理持久化为不可用；记录不会删除，
+	// 锁定到期后仍可由健康检查或数据源重新验证恢复。
 	// 返回 true 表示触发了锁定。
 	RecordFailure(ip string) bool
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -218,9 +217,12 @@ var rootCmd = &cobra.Command{
 			}
 			var blockedIPCount int64
 			proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("locked_until > ?", time.Now()).Count(&blockedIPCount)
+			var quarantinedCount int64
+			proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("available = ?", false).Count(&quarantinedCount)
 			stats := map[string]interface{}{
 				"version":     version,
 				"total":       len(proxies),
+				"quarantined": quarantinedCount,
 				"by_protocol": byProtocol,
 				"by_source":   bySource,
 				"blocked_ips": blockedIPCount,
@@ -326,11 +328,7 @@ func newMITM() *mitm.MITM {
 			return nil
 		},
 		OnProxyFailure: func(proxyURI string) {
-			u, err := url.Parse(proxyURI)
-			if err != nil || u.Hostname() == "" {
-				return
-			}
-			proxyinabox.CI.RecordFailure(u.Hostname())
+			proxyinabox.CI.MarkProxyUnavailable(proxyURI)
 		},
 	}
 	if proxyinabox.Config.EnableMITM {
