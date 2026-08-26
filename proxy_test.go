@@ -45,7 +45,7 @@ func TestProxyURI(t *testing.T) {
 	}
 }
 
-func TestProxyAvailabilityMigrationDefaultsExistingRowsToAvailable(t *testing.T) {
+func TestMigrateDBAddsAvailabilityAndDeduplicatesLegacyProxies(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -72,16 +72,50 @@ func TestProxyAvailabilityMigrationDefaultsExistingRowsToAvailable(t *testing.T)
 	).Error; err != nil {
 		t.Fatalf("insert legacy proxy: %v", err)
 	}
+	if err := db.Exec(
+		"INSERT INTO proxies (ip, port, protocol, last_verify) VALUES (?, ?, ?, ?)",
+		"1.2.3.4", "8080", "http", time.Now(),
+	).Error; err != nil {
+		t.Fatalf("insert duplicate legacy proxy: %v", err)
+	}
+	if err := db.Exec(
+		"INSERT INTO proxies (ip, port, protocol, last_verify) VALUES (?, ?, ?, ?)",
+		"1.2.3.4", "8080", "", time.Now(),
+	).Error; err != nil {
+		t.Fatalf("insert blank-protocol legacy proxy: %v", err)
+	}
+	if err := db.Exec(
+		"INSERT INTO proxies (deleted_at, ip, port, protocol, last_verify) VALUES (?, ?, ?, ?, ?)",
+		time.Now(), "1.2.3.4", "8080", "http", time.Now(),
+	).Error; err != nil {
+		t.Fatalf("insert soft-deleted legacy proxy: %v", err)
+	}
 
-	if err := db.AutoMigrate(&Proxy{}); err != nil {
-		t.Fatalf("migrate Proxy: %v", err)
+	if err := migrateDB(db); err != nil {
+		t.Fatalf("migrate database: %v", err)
 	}
-	var migrated Proxy
-	if err := db.First(&migrated).Error; err != nil {
-		t.Fatalf("load migrated proxy: %v", err)
+	var migrated []Proxy
+	if err := db.Find(&migrated).Error; err != nil {
+		t.Fatalf("load migrated proxies: %v", err)
 	}
-	if !migrated.Available {
+	if len(migrated) != 1 {
+		t.Fatalf("migrated proxy count = %d, want 1", len(migrated))
+	}
+	if !migrated[0].Available {
 		t.Fatal("legacy proxy should default to available after migration")
+	}
+	if migrated[0].Protocol != "http" {
+		t.Fatalf("migrated protocol = %q, want http", migrated[0].Protocol)
+	}
+	var unscopedCount int64
+	if err := db.Unscoped().Model(&Proxy{}).Count(&unscopedCount).Error; err != nil {
+		t.Fatalf("count all migrated proxies: %v", err)
+	}
+	if unscopedCount != 1 {
+		t.Fatalf("unscoped migrated proxy count = %d, want 1", unscopedCount)
+	}
+	if !db.Migrator().HasIndex(&Proxy{}, "idx_proxy_endpoint") {
+		t.Fatal("endpoint unique index was not created")
 	}
 }
 

@@ -75,13 +75,6 @@ func NewMemCache() *MemCache {
 }
 
 func (c *MemCache) load() {
-	// BUG-FIX: 启动时将旧数据中空 protocol 统一为 "http"，保证 uniqueIndex 一致性。
-	// 同时删除因旧版缺少唯一约束而产生的重复 (IP, Port, Protocol) 记录，只保留最新的。
-	proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("protocol = '' OR protocol IS NULL").Update("protocol", "http")
-	proxyinabox.DB.Exec(`DELETE FROM proxies WHERE id NOT IN (
-		SELECT MAX(id) FROM proxies WHERE deleted_at IS NULL GROUP BY ip, port, protocol
-	) AND deleted_at IS NULL`)
-
 	var ps []proxyinabox.Proxy
 	err := proxyinabox.DB.Where("available = ?", true).Where("ip NOT IN (?)",
 		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),

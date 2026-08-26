@@ -1,6 +1,7 @@
 package proxyinabox
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/glebarez/sqlite"
@@ -54,5 +55,57 @@ func initDB() {
 	if Config.Debug {
 		DB = DB.Debug()
 	}
-	DB.AutoMigrate(&Proxy{}, &BlockedIP{})
+	if err := migrateDB(DB); err != nil {
+		panic(fmt.Errorf("migrate database: %w", err))
+	}
+}
+
+func migrateDB(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		migrator := tx.Migrator()
+		if migrator.HasTable(&Proxy{}) {
+			// Add this independently of the rest of AutoMigrate. Startup queries
+			// depend on it, so a failed migration must never be allowed to look
+			// successful and fail later in MemCache.load.
+			if !migrator.HasColumn(&Proxy{}, "Available") {
+				if err := migrator.AddColumn(&Proxy{}, "Available"); err != nil {
+					return fmt.Errorf("add proxies.available: %w", err)
+				}
+			}
+
+			// Older releases allowed duplicate endpoints. Remove them before
+			// AutoMigrate creates idx_proxy_endpoint, normalizing an empty protocol
+			// as HTTP when deciding which row is newest.
+			if migrator.HasColumn(&Proxy{}, "IP") &&
+				migrator.HasColumn(&Proxy{}, "Port") &&
+				migrator.HasColumn(&Proxy{}, "Protocol") &&
+				migrator.HasColumn(&Proxy{}, "DeletedAt") {
+				if err := tx.Exec(`DELETE FROM proxies WHERE id IN (
+					SELECT id FROM (
+						SELECT id, ROW_NUMBER() OVER (
+							PARTITION BY ip, port, COALESCE(NULLIF(protocol, ''), 'http')
+							ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, id DESC
+						) AS duplicate_number
+						FROM proxies
+					) AS ranked_proxies
+					WHERE duplicate_number > 1
+				)`).Error; err != nil {
+					return fmt.Errorf("deduplicate legacy proxies: %w", err)
+				}
+				if err := tx.Unscoped().Model(&Proxy{}).
+					Where("protocol = '' OR protocol IS NULL").
+					Update("protocol", "http").Error; err != nil {
+					return fmt.Errorf("normalize legacy proxy protocols: %w", err)
+				}
+			}
+		}
+
+		if err := tx.AutoMigrate(&Proxy{}, &BlockedIP{}); err != nil {
+			return err
+		}
+		if !tx.Migrator().HasColumn(&Proxy{}, "Available") {
+			return fmt.Errorf("proxies.available is missing after migration")
+		}
+		return nil
+	})
 }
