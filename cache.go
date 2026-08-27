@@ -32,6 +32,10 @@ type Cache interface {
 	// 按 URI 隔离单个端点，等待定期健康检查恢复，不累计为整 IP 封禁。
 	MarkProxyUnavailable(proxyURI string)
 
+	// MarkProxyTargetFailure 对某个代理与目标的组合做短期熔断。它不会把
+	// 仍可服务其他目标的代理从全局池中删除。
+	MarkProxyTargetFailure(proxyURI string, target string)
+
 	// RecordFailure 代理请求或验证失败时调用，累计失败次数。
 	// 达到阈值时锁定 IP，并将该 IP 的代理持久化为不可用；记录不会删除，
 	// 锁定到期后仍可由健康检查或数据源重新验证恢复。

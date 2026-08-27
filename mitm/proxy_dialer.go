@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	xproxy "golang.org/x/net/proxy"
 )
@@ -26,6 +27,26 @@ func (e *ProxyConnectError) Error() string {
 type httpConnectDialer struct {
 	proxyAddr string
 	forward   xproxy.Dialer
+}
+
+// deadlineDialer bounds the connection to an upstream proxy and leaves a
+// deadline installed for the proxy protocol handshake. Callers clear it only
+// after CONNECT/SOCKS negotiation has completed successfully.
+type deadlineDialer struct {
+	connectTimeout   time.Duration
+	handshakeTimeout time.Duration
+}
+
+func (d deadlineDialer) Dial(network, addr string) (net.Conn, error) {
+	conn, err := net.DialTimeout(network, addr, d.connectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(d.handshakeTimeout)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {

@@ -319,16 +319,24 @@ func skipIfStillRunning(job func()) cron.Job {
 
 func newMITM() *mitm.MITM {
 	m := &mitm.MITM{
-		ListenHTTPS: proxyinabox.Config.EnableMITM,
-		EnableMITM:  proxyinabox.Config.EnableMITM,
-		HTTPAddr:    httpProxyAddr,
-		HTTPSAddr:   httpsProxyAddr,
-		Scheduler:   proxyinabox.CI.PickProxy,
+		ListenHTTPS:                   proxyinabox.Config.EnableMITM,
+		EnableMITM:                    proxyinabox.Config.EnableMITM,
+		HTTPAddr:                      httpProxyAddr,
+		HTTPSAddr:                     httpsProxyAddr,
+		Scheduler:                     proxyinabox.CI.PickProxy,
+		MaxUpstreamAttempts:           proxyinabox.Config.Upstream.MaxAttempts,
+		UpstreamConnectTimeout:        proxyinabox.Config.Upstream.ConnectTimeout,
+		UpstreamHandshakeTimeout:      proxyinabox.Config.Upstream.HandshakeTimeout,
+		UpstreamResponseHeaderTimeout: proxyinabox.Config.Upstream.ResponseHeaderTimeout,
+		UpstreamRequestTimeout:        proxyinabox.Config.Upstream.RequestTimeout,
 		Filter: func(req *http.Request) error {
 			return nil
 		},
 		OnProxyFailure: func(proxyURI string) {
 			proxyinabox.CI.MarkProxyUnavailable(proxyURI)
+		},
+		OnProxyTargetFailure: func(proxyURI string, target string) {
+			proxyinabox.CI.MarkProxyTargetFailure(proxyURI, target)
 		},
 	}
 	if proxyinabox.Config.EnableMITM {

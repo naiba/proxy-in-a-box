@@ -3,6 +3,7 @@ package proxyinabox
 import (
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -31,6 +32,16 @@ type Conf struct {
 		// obscura 二进制路径，留空则使用 PATH 中的默认命令
 		Bin string `mapstructure:"bin"`
 	} `mapstructure:"obscura"`
+	// Upstream controls how requests are attempted through proxies selected from
+	// the pool. Zero values use the safe defaults defined by the MITM package.
+	Upstream struct {
+		MaxAttempts           int           `mapstructure:"max_attempts"`
+		ConnectTimeout        time.Duration `mapstructure:"connect_timeout"`
+		HandshakeTimeout      time.Duration `mapstructure:"handshake_timeout"`
+		ResponseHeaderTimeout time.Duration `mapstructure:"response_header_timeout"`
+		RequestTimeout        time.Duration `mapstructure:"request_timeout"`
+		TargetFailureTTL      time.Duration `mapstructure:"target_failure_ttl"`
+	} `mapstructure:"upstream"`
 	// EnableMITM 是否启用 HTTPS 中间人解密，默认 false（关闭时走 TCP 隧道透传，客户端无需关闭 TLS 验证）
 	EnableMITM bool `mapstructure:"enable_mitm"`
 }

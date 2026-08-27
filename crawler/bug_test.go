@@ -27,6 +27,7 @@ func (c *testCache) UpsertProxy(proxyinabox.Proxy) error                   { ret
 func (c *testCache) MarkVerifySuccess(proxyinabox.Proxy, int64, time.Time) {}
 func (c *testCache) MarkVerifyFailed(proxyinabox.Proxy)                    {}
 func (c *testCache) MarkProxyUnavailable(string)                           {}
+func (c *testCache) MarkProxyTargetFailure(string, string)                 {}
 func (c *testCache) RecordFailure(string) bool                             { return false }
 func (c *testCache) LoadLockedIPs()                                        {}
 func (c *testCache) CleanupStaleProxies(time.Duration)                     {}

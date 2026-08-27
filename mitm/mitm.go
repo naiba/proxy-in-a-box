@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,8 +18,14 @@ import (
 )
 
 const (
-	version  = "1.0"
-	basename = "NBMITM"
+	version                              = "1.0"
+	basename                             = "NBMITM"
+	defaultMaxUpstreamAttempts           = 3
+	maxConfiguredUpstreamAttempts        = 10
+	defaultUpstreamConnectTimeout        = 5 * time.Second
+	defaultUpstreamHandshakeTimeout      = 7 * time.Second
+	defaultUpstreamResponseHeaderTimeout = 12 * time.Second
+	defaultUpstreamRequestTimeout        = 20 * time.Second
 )
 
 // TLSConfig TLS配置
@@ -42,6 +49,15 @@ type MITM struct {
 	Scheduler      func(req *http.Request) (proxy string, err error) //代理调度 func
 	Filter         func(req *http.Request) error                     //请求鉴权、清洗、限流
 	OnProxyFailure func(proxyURI string)                             //上游代理不可用时的回调（如 407 需要认证）
+	// OnProxyTargetFailure temporarily excludes one upstream for one target.
+	// Target-specific failures must not quarantine an otherwise healthy proxy.
+	OnProxyTargetFailure func(proxyURI string, target string)
+
+	MaxUpstreamAttempts           int
+	UpstreamConnectTimeout        time.Duration
+	UpstreamHandshakeTimeout      time.Duration
+	UpstreamResponseHeaderTimeout time.Duration
+	UpstreamRequestTimeout        time.Duration
 
 	cache       *cache.Cache
 	pk          *rsa.PrivateKey
@@ -101,10 +117,72 @@ func (m *MITM) Init() {
 
 func (m *MITM) newServer(addr string) *http.Server {
 	return &http.Server{
-		Addr:    addr,
-		Handler: http.HandlerFunc(m.serve),
+		Addr:              addr,
+		Handler:           http.HandlerFunc(m.serve),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
 		// Disable HTTP/2.
 		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+	}
+}
+
+func positiveDuration(value time.Duration, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func (m *MITM) upstreamAttemptLimit() int {
+	limit := m.MaxUpstreamAttempts
+	if limit <= 0 {
+		limit = defaultMaxUpstreamAttempts
+	}
+	if limit > maxConfiguredUpstreamAttempts {
+		return maxConfiguredUpstreamAttempts
+	}
+	return limit
+}
+
+func (m *MITM) upstreamConnectTimeout() time.Duration {
+	return positiveDuration(m.UpstreamConnectTimeout, defaultUpstreamConnectTimeout)
+}
+
+func (m *MITM) upstreamHandshakeTimeout() time.Duration {
+	return positiveDuration(m.UpstreamHandshakeTimeout, defaultUpstreamHandshakeTimeout)
+}
+
+func (m *MITM) upstreamResponseHeaderTimeout() time.Duration {
+	return positiveDuration(m.UpstreamResponseHeaderTimeout, defaultUpstreamResponseHeaderTimeout)
+}
+
+func (m *MITM) upstreamRequestTimeout() time.Duration {
+	return positiveDuration(m.UpstreamRequestTimeout, defaultUpstreamRequestTimeout)
+}
+
+func (m *MITM) nextProxy(r *http.Request, tried map[string]struct{}) (string, error) {
+	if m.Scheduler == nil {
+		return "", errors.New("proxy scheduler is not configured")
+	}
+	var lastDuplicate string
+	for range m.upstreamAttemptLimit() * 2 {
+		proxyURI, err := m.Scheduler(r)
+		if err != nil {
+			return "", err
+		}
+		if _, exists := tried[proxyURI]; exists {
+			lastDuplicate = proxyURI
+			continue
+		}
+		tried[proxyURI] = struct{}{}
+		return proxyURI, nil
+	}
+	return "", fmt.Errorf("proxy scheduler repeatedly selected an already attempted proxy %q", lastDuplicate)
+}
+
+func (m *MITM) reportTargetFailure(proxyURI string, target string) {
+	if m.OnProxyTargetFailure != nil {
+		m.OnProxyTargetFailure(proxyURI, target)
 	}
 }
 
@@ -133,10 +211,12 @@ func (m *MITM) ServeHTTP() {
 func (m *MITM) serve(w http.ResponseWriter, r *http.Request) {
 	GlobalRequestStats.TotalRequests.Add(1)
 
-	if e := m.Filter(r); e != nil {
-		GlobalRequestStats.FailedRequests.Add(1)
-		http.Error(w, e.Error(), http.StatusProxyAuthRequired)
-		return
+	if m.Filter != nil {
+		if e := m.Filter(r); e != nil {
+			GlobalRequestStats.FailedRequests.Add(1)
+			http.Error(w, e.Error(), http.StatusProxyAuthRequired)
+			return
+		}
 	}
 	if r.Method == http.MethodConnect {
 		if m.EnableMITM {
@@ -192,51 +272,74 @@ func (m *MITM) injectHTTPS(resp http.ResponseWriter, req *http.Request) {
 
 // tunnelHTTPS 不解密 HTTPS 流量，直接建立 TCP 隧道透传，客户端与目标服务器直接完成 TLS 握手
 func (m *MITM) tunnelHTTPS(w http.ResponseWriter, r *http.Request) {
-	targetAddr := r.Host
+	targetKey := r.Host
+	targetAddr := targetKey
 	if !strings.Contains(targetAddr, ":") {
 		targetAddr += ":443"
 	}
-
-	proxyURI, schedErr := m.Scheduler(r)
-	if schedErr != nil {
-		GlobalRequestStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy scheduler error: %s", schedErr))
-		return
-	}
-	proxyURL, parseErr := url.Parse(proxyURI)
-	if parseErr != nil {
-		GlobalRequestStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS proxy parse error: %s", parseErr))
-		return
+	if targetKey == "" {
+		targetKey = targetAddr
 	}
 
-	upstreamProto := proxyURL.Scheme
-	upstreamStats := GlobalUpstreamStats.Get(upstreamProto)
-	upstreamStats.TotalRequests.Add(1)
+	tried := make(map[string]struct{})
+	var attemptErrors []error
+	var remoteConn net.Conn
+	var upstreamProto string
+	var upstreamStats *RequestStats
 
-	// BUG-FIX: 使用 x/net/proxy.FromURL 统一处理代理拨号（HTTP CONNECT / SOCKS5）
-	// 之前的代码对所有代理强制发 HTTP CONNECT，导致 SOCKS 代理必然失败返回 502
-	dialer, err := xproxy.FromURL(proxyURL, xproxy.Direct)
-	if err != nil {
-		GlobalRequestStats.FailedRequests.Add(1)
-		upstreamStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS create dialer error: %s", err))
-		return
-	}
-	remoteConn, err := dialer.Dial("tcp", targetAddr)
-	if err != nil {
-		// BUG-FIX: HTTPS 隧道模式下 HTTP CONNECT 握手返回 407/403 时，之前只返回 502
-		// 但不触发 OnProxyFailure，导致需要认证的代理不会被记录失败、无法被拉黑
-		var connectErr *ProxyConnectError
-		if errors.As(err, &connectErr) &&
-			(connectErr.StatusCode == http.StatusProxyAuthRequired || connectErr.StatusCode == http.StatusForbidden) {
-			if m.OnProxyFailure != nil {
-				m.OnProxyFailure(proxyURI)
-			}
+	for attempt := 1; attempt <= m.upstreamAttemptLimit(); attempt++ {
+		proxyURI, schedErr := m.nextProxy(r, tried)
+		if schedErr != nil {
+			attemptErrors = append(attemptErrors, fmt.Errorf("schedule attempt %d: %w", attempt, schedErr))
+			break
 		}
+		proxyURL, parseErr := url.Parse(proxyURI)
+		if parseErr != nil {
+			m.reportTargetFailure(proxyURI, targetKey)
+			attemptErrors = append(attemptErrors, fmt.Errorf("parse upstream %s: %w", proxyURI, parseErr))
+			continue
+		}
+
+		upstreamProto = proxyURL.Scheme
+		upstreamStats = GlobalUpstreamStats.Get(upstreamProto)
+		upstreamStats.TotalRequests.Add(1)
+
+		// Bound both the TCP connection to the public proxy and its protocol
+		// handshake. A silent CONNECT endpoint must never hold the client forever.
+		dialer, dialErr := xproxy.FromURL(proxyURL, deadlineDialer{
+			connectTimeout:   m.upstreamConnectTimeout(),
+			handshakeTimeout: m.upstreamHandshakeTimeout(),
+		})
+		if dialErr == nil {
+			remoteConn, dialErr = dialer.Dial("tcp", targetAddr)
+		}
+		if dialErr != nil {
+			var connectErr *ProxyConnectError
+			if errors.As(dialErr, &connectErr) &&
+				(connectErr.StatusCode == http.StatusProxyAuthRequired || connectErr.StatusCode == http.StatusForbidden) {
+				if m.OnProxyFailure != nil {
+					m.OnProxyFailure(proxyURI)
+				}
+			}
+			m.reportTargetFailure(proxyURI, targetKey)
+			upstreamStats.FailedRequests.Add(1)
+			attemptErrors = append(attemptErrors, fmt.Errorf("attempt %d through %s: %w", attempt, proxyURI, dialErr))
+			continue
+		}
+		if deadlineErr := remoteConn.SetDeadline(time.Time{}); deadlineErr != nil {
+			remoteConn.Close()
+			m.reportTargetFailure(proxyURI, targetKey)
+			upstreamStats.FailedRequests.Add(1)
+			attemptErrors = append(attemptErrors, fmt.Errorf("clear deadline through %s: %w", proxyURI, deadlineErr))
+			remoteConn = nil
+			continue
+		}
+		break
+	}
+
+	if remoteConn == nil {
 		GlobalRequestStats.FailedRequests.Add(1)
-		upstreamStats.FailedRequests.Add(1)
-		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS dial through proxy error: %s", err))
+		badGateWay(w, fmt.Sprintf("[MITM] tunnelHTTPS failed after %d upstream attempt(s): %v", len(attemptErrors), errors.Join(attemptErrors...)))
 		return
 	}
 

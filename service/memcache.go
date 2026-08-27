@@ -17,6 +17,7 @@ const (
 	// A 15-day lock made transient public-proxy failures effectively permanent.
 	// Six hours still stops hot retry loops while allowing automatic recovery.
 	proxyFailureLockDuration = 6 * time.Hour
+	defaultTargetFailureTTL  = 10 * time.Minute
 )
 
 type proxyEntry struct {
@@ -48,8 +49,10 @@ type proxyList struct {
 }
 
 type domainScheduling struct {
-	l  sync.Mutex
-	dl map[string][]*proxyEntry
+	l              sync.Mutex
+	dl             map[string][]*proxyEntry
+	targetFailures map[string]map[string]time.Time
+	failureTTL     time.Duration
 }
 
 type MemCache struct {
@@ -66,12 +69,21 @@ func NewMemCache() *MemCache {
 			index: make(map[string]struct{}),
 		},
 		domains: &domainScheduling{
-			dl: make(map[string][]*proxyEntry),
+			dl:             make(map[string][]*proxyEntry),
+			targetFailures: make(map[string]map[string]time.Time),
+			failureTTL:     configuredTargetFailureTTL(),
 		},
 	}
 	c.load()
 	c.gc(time.Minute * 10)
 	return c
+}
+
+func configuredTargetFailureTTL() time.Duration {
+	if proxyinabox.Config.Upstream.TargetFailureTTL > 0 {
+		return proxyinabox.Config.Upstream.TargetFailureTTL
+	}
+	return defaultTargetFailureTTL
 }
 
 func (c *MemCache) load() {
@@ -96,7 +108,8 @@ func (c *MemCache) gc(dur time.Duration) {
 	go func() {
 		for range ticker.C {
 			num := 0
-			now := time.Now().Unix()
+			nowTime := time.Now()
+			now := nowTime.Unix()
 			c.domains.l.Lock()
 			// BUG-FIX: 使用倒序遍历删除切片元素，避免索引错位导致某些记录未清理
 			for k, v := range c.domains.dl {
@@ -115,6 +128,17 @@ func (c *MemCache) gc(dur time.Duration) {
 				if len(c.domains.dl[k]) == 0 {
 					delete(c.domains.dl, k)
 					num++
+				}
+			}
+			for target, failures := range c.domains.targetFailures {
+				for proxyURI, expiresAt := range failures {
+					if !nowTime.Before(expiresAt) {
+						delete(failures, proxyURI)
+						num++
+					}
+				}
+				if len(failures) == 0 {
+					delete(c.domains.targetFailures, target)
 				}
 			}
 			c.domains.l.Unlock()
@@ -186,39 +210,69 @@ func (c *MemCache) PickProxy(req *http.Request) (string, error) {
 	// BUG-FIX: 使用副本排序，不修改原数组，避免破坏 GetProxy 的轮询顺序
 	sortedList := make(sortableProxyList, len(c.proxies.pl))
 	copy(sortedList, c.proxies.pl)
-	sort.Sort(sortedList)
+	sort.Stable(sortedList)
 	c.domains.l.Lock()
 	defer c.domains.l.Unlock()
-	if pl, has := c.domains.dl[domain]; has {
-		// BUG-FIX: 同样使用副本排序域名列表
-		sortedDomainList := make(sortableProxyList, len(pl))
-		copy(sortedDomainList, pl)
-		sort.Sort(sortedDomainList)
-		for i := 0; i < len(sortedDomainList); i++ {
-			// BUG-FIX: 使用原子操作读取 n 字段
-			if now-sortedDomainList[i].getN() < 3 {
-				candidate[sortedDomainList[i].p.IP] = struct{}{}
-			} else {
-				// 删除过期记录
-				c.domains.dl[domain] = append(pl[:i], pl[i+1:]...)
-			}
+
+	// Rebuild instead of deleting from one slice using indexes from a sorted
+	// copy. The old code could remove the wrong entry and repeatedly return the
+	// first proxy after the three-second window elapsed.
+	recent := make([]*proxyEntry, 0, len(c.domains.dl[domain]))
+	for _, entry := range c.domains.dl[domain] {
+		if now-entry.getN() < 3 {
+			candidate[entry.p.IP] = struct{}{}
+			recent = append(recent, entry)
 		}
-	} else {
-		c.domains.dl[domain] = make([]*proxyEntry, 0)
 	}
-	for i := 0; i < length; i++ {
-		if _, has := candidate[c.proxies.pl[i].p.IP]; !has {
+	c.domains.dl[domain] = recent
+
+	failedForTarget := c.domains.targetFailures[domain]
+	for proxyURI, expiresAt := range failedForTarget {
+		if !time.Now().Before(expiresAt) {
+			delete(failedForTarget, proxyURI)
+		}
+	}
+	if len(failedForTarget) == 0 {
+		delete(c.domains.targetFailures, domain)
+	}
+
+	for _, entry := range sortedList {
+		if _, failed := failedForTarget[entry.p.URI()]; failed {
+			continue
+		}
+		if _, has := candidate[entry.p.IP]; !has {
 			c.domains.dl[domain] = append(c.domains.dl[domain], &proxyEntry{
-				p: c.proxies.pl[i].p,
+				p: entry.p,
 				n: now,
 			})
-			// BUG-FIX: 使用原子操作增加 n 字段，防止并发竞态
-			c.proxies.pl[i].atomicAddN(1)
-			fmt.Println("[PIAB]", "proxy scheduling", "[✅]", req.Host, "-->", c.proxies.pl[i].p.URI())
-			return c.proxies.pl[i].p.URI(), nil
+			entry.atomicAddN(1)
+			fmt.Println("[PIAB]", "proxy scheduling", "[✅]", req.Host, "-->", entry.p.URI())
+			return entry.p.URI(), nil
 		}
 	}
 	return "", fmt.Errorf("%s:all(%d),domain(%s)", "No free agent can be used:", length, domain)
+}
+
+func (c *MemCache) MarkProxyTargetFailure(proxyURI string, target string) {
+	if proxyURI == "" || target == "" {
+		return
+	}
+	c.domains.l.Lock()
+	defer c.domains.l.Unlock()
+
+	if c.domains.targetFailures == nil {
+		c.domains.targetFailures = make(map[string]map[string]time.Time)
+	}
+	if c.domains.failureTTL <= 0 {
+		c.domains.failureTTL = configuredTargetFailureTTL()
+	}
+	failures := c.domains.targetFailures[target]
+	if failures == nil {
+		failures = make(map[string]time.Time)
+		c.domains.targetFailures[target] = failures
+	}
+	failures[proxyURI] = time.Now().Add(c.domains.failureTTL)
+	fmt.Printf("[PIAB] proxy [⚠️] circuit opened for %s -> %s for %s\n", proxyURI, target, c.domains.failureTTL)
 }
 
 // --- 代理生命周期 ---

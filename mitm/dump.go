@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	xproxy "golang.org/x/net/proxy"
 )
@@ -26,7 +28,7 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	defer func() {
 		if err != nil {
 			GlobalRequestStats.FailedRequests.Add(1)
-			if upstreamProto != "" {
+			if remoteResponse != nil && upstreamProto != "" {
 				GlobalUpstreamStats.Get(upstreamProto).FailedRequests.Add(1)
 			}
 			clientResponse.WriteHeader(http.StatusBadGateway)
@@ -40,27 +42,12 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 		return
 	}
 
-	var selectedProxyURI string
-	remoteResponse, upstreamProto, selectedProxyURI, err = m.replayRequest(clientRequest)
+	remoteResponse, upstreamProto, _, err = m.replayRequest(clientRequest)
 	if err != nil {
 		fmt.Println("[MITM]", "remoteResponse", "[❎]", err)
 		return
 	}
 	defer remoteResponse.Body.Close()
-
-	if upstreamProto != "" {
-		GlobalUpstreamStats.Get(upstreamProto).TotalRequests.Add(1)
-	}
-
-	// HTTP 转发中的 403 也可能是目标站的正常响应，必须原样转发。CONNECT
-	// 阶段的 403/407 由 tunnelHTTPS 中的 ProxyConnectError 单独处理。
-	if remoteResponse.StatusCode == http.StatusProxyAuthRequired {
-		if m.OnProxyFailure != nil {
-			m.OnProxyFailure(selectedProxyURI)
-		}
-		err = fmt.Errorf("upstream proxy %s returned %d", selectedProxyURI, remoteResponse.StatusCode)
-		return
-	}
 
 	remoteResponseDump, err = httputil.DumpResponse(remoteResponse, true)
 	if err != nil {
@@ -117,35 +104,108 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 }
 
 func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, upstreamProtocol string, proxyURI string, err error) {
-	transport := http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	attemptLimit := 1
+	if isSafeToRetry(clientRequest) {
+		attemptLimit = m.upstreamAttemptLimit()
 	}
-	proxyURI, err = m.Scheduler(clientRequest)
-	if err != nil {
-		fmt.Println("[MITM]", "proxy scheduler", "[❎]", err)
-		return
-	}
-	var p *url.URL
-	p, err = url.Parse(proxyURI)
-	if err != nil {
-		fmt.Println("[MITM]", "proxy parse", "[❎]", err)
-		return
+	tried := make(map[string]struct{})
+	var attemptErrors []error
+
+	for attempt := 1; attempt <= attemptLimit; attempt++ {
+		proxyURI, err = m.nextProxy(clientRequest, tried)
+		if err != nil {
+			attemptErrors = append(attemptErrors, fmt.Errorf("schedule attempt %d: %w", attempt, err))
+			break
+		}
+
+		var p *url.URL
+		p, err = url.Parse(proxyURI)
+		if err != nil {
+			m.reportTargetFailure(proxyURI, clientRequest.Host)
+			attemptErrors = append(attemptErrors, fmt.Errorf("parse upstream %s: %w", proxyURI, err))
+			continue
+		}
+
+		upstreamProtocol = strings.ToLower(p.Scheme)
+		upstreamStats := GlobalUpstreamStats.Get(upstreamProtocol)
+		upstreamStats.TotalRequests.Add(1)
+
+		resp, err = m.doRequestThroughProxy(clientRequest, p)
+		if err != nil {
+			upstreamStats.FailedRequests.Add(1)
+			m.reportTargetFailure(proxyURI, clientRequest.Host)
+			attemptErrors = append(attemptErrors, fmt.Errorf("attempt %d through %s: %w", attempt, proxyURI, err))
+			continue
+		}
+
+		// HTTP 403 can be an ordinary target response and must pass through.
+		// A 407 is emitted by the selected proxy, so quarantine and retry it.
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			resp.Body.Close()
+			upstreamStats.FailedRequests.Add(1)
+			if m.OnProxyFailure != nil {
+				m.OnProxyFailure(proxyURI)
+			}
+			m.reportTargetFailure(proxyURI, clientRequest.Host)
+			attemptErrors = append(attemptErrors, fmt.Errorf("attempt %d through %s returned %d", attempt, proxyURI, resp.StatusCode))
+			resp = nil
+			continue
+		}
+
+		return resp, upstreamProtocol, proxyURI, nil
 	}
 
-	upstreamProtocol = strings.ToLower(p.Scheme)
+	return nil, upstreamProtocol, proxyURI, fmt.Errorf("upstream request failed after %d attempt(s): %w", len(attemptErrors), errors.Join(attemptErrors...))
+}
+
+func isSafeToRetry(req *http.Request) bool {
+	if req.Body != nil && req.Body != http.NoBody {
+		return false
+	}
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *MITM) doRequestThroughProxy(clientRequest *http.Request, p *url.URL) (*http.Response, error) {
+	dialer := &net.Dialer{
+		Timeout:   m.upstreamConnectTimeout(),
+		KeepAlive: 30 * time.Second,
+	}
+	transport := http.Transport{
+		DialContext:           dialer.DialContext,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		TLSHandshakeTimeout:   m.upstreamHandshakeTimeout(),
+		ResponseHeaderTimeout: m.upstreamResponseHeaderTimeout(),
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
 
 	// BUG-FIX: http.ProxyURL 只支持 HTTP/HTTPS scheme 的代理，SOCKS 代理在此路径下
 	// 会被忽略导致直连。改用 x/net/proxy.FromURL 统一处理所有代理协议的拨号
 	if p.Scheme == "http" || p.Scheme == "https" {
 		transport.Proxy = http.ProxyURL(p)
 	} else {
-		dialer, dialErr := xproxy.FromURL(p, xproxy.Direct)
+		proxyDialer, dialErr := xproxy.FromURL(p, deadlineDialer{
+			connectTimeout:   m.upstreamConnectTimeout(),
+			handshakeTimeout: m.upstreamHandshakeTimeout(),
+		})
 		if dialErr != nil {
-			err = dialErr
-			return
+			return nil, dialErr
 		}
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
+			conn, err := proxyDialer.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if err := conn.SetDeadline(time.Time{}); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return conn, nil
 		}
 	}
 
@@ -153,13 +213,13 @@ func (m *MITM) replayRequest(clientRequest *http.Request) (resp *http.Response, 
 	request.RequestURI = ""
 	cli := http.Client{
 		Transport: &transport,
+		Timeout:   m.upstreamRequestTimeout(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return fmt.Errorf("")
+			return http.ErrUseLastResponse
 		},
 	}
 
-	resp, err = cli.Do(request)
-	return
+	return cli.Do(request)
 }
 
 func copyResponseHeader(r *http.Response, c http.ResponseWriter) {

@@ -31,7 +31,9 @@ func newTestCache(t *testing.T) *MemCache {
 			index: make(map[string]struct{}),
 		},
 		domains: &domainScheduling{
-			dl: make(map[string][]*proxyEntry),
+			dl:             make(map[string][]*proxyEntry),
+			targetFailures: make(map[string]map[string]time.Time),
+			failureTTL:     defaultTargetFailureTTL,
 		},
 	}
 }
@@ -790,6 +792,75 @@ func TestPickProxy_RotatesDomainProxies(t *testing.T) {
 	}
 	if first == second {
 		t.Error("PickProxy should rotate to a different proxy for the same domain")
+	}
+}
+
+func TestPickProxy_UsesLeastUsedProxyAcrossTargets(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	firstProxy := proxyinabox.Proxy{
+		IP: "1.1.1.1", Port: "8080", Protocol: "http", Source: "test", LastVerify: time.Now(),
+	}
+	secondProxy := proxyinabox.Proxy{
+		IP: "2.2.2.2", Port: "8080", Protocol: "http", Source: "test", LastVerify: time.Now(),
+	}
+	c.UpsertProxy(firstProxy)
+	c.UpsertProxy(secondProxy)
+
+	firstRequest, _ := http.NewRequest(http.MethodGet, "http://first.example/resource", nil)
+	selected, err := c.PickProxy(firstRequest)
+	if err != nil {
+		t.Fatalf("first PickProxy: %v", err)
+	}
+	if selected != firstProxy.URI() {
+		t.Fatalf("first PickProxy = %q, want %q", selected, firstProxy.URI())
+	}
+
+	secondRequest, _ := http.NewRequest(http.MethodGet, "http://second.example/resource", nil)
+	selected, err = c.PickProxy(secondRequest)
+	if err != nil {
+		t.Fatalf("second PickProxy: %v", err)
+	}
+	if selected != secondProxy.URI() {
+		t.Errorf("second PickProxy = %q, want least-used %q", selected, secondProxy.URI())
+	}
+}
+
+func TestPickProxy_SkipsTargetCircuitUntilExpiry(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+
+	failedProxy := proxyinabox.Proxy{
+		IP: "1.1.1.1", Port: "8080", Protocol: "http", Source: "test", LastVerify: time.Now(),
+	}
+	healthyProxy := proxyinabox.Proxy{
+		IP: "2.2.2.2", Port: "8080", Protocol: "http", Source: "test", LastVerify: time.Now(),
+	}
+	c.UpsertProxy(failedProxy)
+	c.UpsertProxy(healthyProxy)
+
+	target := "target.example"
+	c.MarkProxyTargetFailure(failedProxy.URI(), target)
+	request, _ := http.NewRequest(http.MethodGet, "http://"+target+"/resource", nil)
+	selected, err := c.PickProxy(request)
+	if err != nil {
+		t.Fatalf("PickProxy with circuit open: %v", err)
+	}
+	if selected != healthyProxy.URI() {
+		t.Fatalf("PickProxy with circuit open = %q, want %q", selected, healthyProxy.URI())
+	}
+
+	c.domains.l.Lock()
+	c.domains.targetFailures[target][failedProxy.URI()] = time.Now().Add(-time.Second)
+	c.domains.l.Unlock()
+
+	selected, err = c.PickProxy(request)
+	if err != nil {
+		t.Fatalf("PickProxy after circuit expiry: %v", err)
+	}
+	if selected != failedProxy.URI() {
+		t.Errorf("PickProxy after circuit expiry = %q, want %q", selected, failedProxy.URI())
 	}
 }
 

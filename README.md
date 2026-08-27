@@ -104,6 +104,15 @@ sys:
 # When disabled (default), HTTPS CONNECT requests are tunneled as-is — clients use standard TLS verification.
 enable_mitm: false
 
+# Upstream proxy resilience (all optional; defaults shown)
+upstream:
+  max_attempts: 3              # distinct exits tried for GET/HEAD/OPTIONS/TRACE and HTTPS CONNECT
+  connect_timeout: 5s          # TCP connection timeout to an upstream proxy
+  handshake_timeout: 7s        # CONNECT/SOCKS/TLS handshake timeout
+  response_header_timeout: 12s # response-header timeout
+  request_timeout: 20s         # total timeout for one upstream HTTP attempt
+  target_failure_ttl: 10m      # circuit-breaker TTL for one proxy/target pair
+
 # Headless browser for JS-rendered pages (optional)
 # Requires Obscura v0.2.1+ with the stealth build feature — included in the Docker image
 # Proxy-in-a-Box starts Obscura with --stealth by default.

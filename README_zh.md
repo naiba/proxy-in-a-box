@@ -104,6 +104,15 @@ sys:
 # 关闭时（默认），HTTPS CONNECT 请求直接隧道透传，客户端使用标准 TLS 验证
 enable_mitm: false
 
+# 上游代理容错（均可省略，以下为默认值）
+upstream:
+  max_attempts: 3              # GET/HEAD/OPTIONS/TRACE 及 HTTPS CONNECT 最多尝试的不同出口数
+  connect_timeout: 5s          # 连接上游代理的超时
+  handshake_timeout: 7s        # CONNECT/SOCKS/TLS 握手超时
+  response_header_timeout: 12s # 等待响应头超时
+  request_timeout: 20s         # 单次 HTTP 上游请求总超时
+  target_failure_ttl: 10m      # 代理与特定目标组合失败后的熔断时间
+
 # 无头浏览器配置（可选）
 # 需要带 stealth 构建特性的 Obscura v0.2.1+ — Docker 镜像已内置
 # Proxy-in-a-Box 默认使用 --stealth 启动 Obscura。
