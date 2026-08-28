@@ -76,28 +76,38 @@ func getDelay(pc chan proxyinabox.Proxy) {
 			}
 
 			start := time.Now().Unix()
-			body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*5, proxy, 3)
+			body, err := getURLThroughProxyWithRetryLimit(
+				verifyEndpoint,
+				time.Second*5,
+				proxy,
+				configuredHealthCheckRetries(),
+				configuredHealthResponseBodyLimit(),
+			)
 			var trace cloudflareTraceResult
 			if err == nil {
 				trace, err = parseCloudflareTrace(body)
 			}
 			delay := time.Now().Unix() - start
 			if err != nil || trace.IP != p.IP {
-				locked := proxyinabox.CI.RecordFailure(p.IP)
-				if !locked {
-					proxyinabox.CI.MarkVerifyFailed(p)
-				}
+				recordHealthCheckFailure(p)
 				return
 			}
-			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
-				fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
-				locked := proxyinabox.CI.RecordFailure(p.IP)
-				if !locked {
-					proxyinabox.CI.MarkVerifyFailed(p)
+			deepVerified := needsDeepCheck(p, time.Now())
+			if deepVerified {
+				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+					fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
+					recordHealthCheckFailure(p)
+					return
 				}
-				return
 			}
-			proxyinabox.CI.MarkVerifySuccess(p, delay, time.Now())
+			proxyinabox.CI.MarkVerifySuccess(p, delay, time.Now(), deepVerified)
+			candidateFailures.clear(proxy)
 		}()
 	}
+}
+
+func recordHealthCheckFailure(p proxyinabox.Proxy) {
+	failures := proxyinabox.CI.MarkVerifyFailed(p)
+	candidateFailures.recordFailure(p.URI(), failures, time.Now())
+	proxyinabox.CI.RecordFailure(p.IP)
 }

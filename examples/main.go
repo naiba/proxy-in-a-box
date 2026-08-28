@@ -16,14 +16,14 @@ func main() {
 	wg.Add(20)
 	go func() {
 		for i := 0; i < 10; i++ {
-			testHTTPGet("HTTP-"+strconv.Itoa(i), "http://www.baidu.com", httpClient)
+			testHTTPGet("HTTP-"+strconv.Itoa(i), "http://target.example", httpClient)
 			wg.Done()
 		}
 	}()
 	httpsClient := getProxyClient("https://127.0.0.1:8081")
 	go func() {
 		for i := 0; i < 10; i++ {
-			testHTTPGet("HTTPS-"+strconv.Itoa(i), "https://www.baidu.com/", httpsClient)
+			testHTTPGet("HTTPS-"+strconv.Itoa(i), "https://target.example/", httpsClient)
 			wg.Done()
 		}
 	}()

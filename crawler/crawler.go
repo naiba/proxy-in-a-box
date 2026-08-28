@@ -165,36 +165,57 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			}
 
 			if proxyinabox.CI.HasProxy(proxy) {
+				candidateFailures.clear(proxy)
+				return
+			}
+
+			// Persisted endpoint delays and the in-memory negative cache both
+			// prevent a frequent source refresh from bypassing retry backoff.
+			if !proxyinabox.CI.IsProxyValidationDue(proxy) ||
+				!candidateFailures.isDue(proxy, time.Now()) {
 				return
 			}
 
 			start := time.Now().Unix()
 
-			body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*7, proxy, 3)
+			body, err := getURLThroughProxyWithRetryLimit(
+				verifyEndpoint,
+				time.Second*7,
+				proxy,
+				configuredHealthCheckRetries(),
+				configuredHealthResponseBodyLimit(),
+			)
 			var trace cloudflareTraceResult
 			if err == nil {
 				trace, err = parseCloudflareTrace(body)
 			}
 
-			if err == nil && trace.IP == p.IP {
-				// BUG-FIX: 某些代理对 Cloudflare 等 CDN IP 正常透传，但对非 CDN 站点做 MITM
-				// 返回过期/自签名证书。对非 CDN 站做一次 TLS 握手探测，拦截选择性劫持的代理。
-				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
-					fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
-					proxyinabox.CI.RecordFailure(p.IP)
-					return
-				}
-				p.Country = trace.Loc
-				p.Delay = time.Now().Unix() - start
-				p.LastVerify = time.Now()
+			if err != nil || trace.IP != p.IP {
+				candidateFailures.recordFailure(proxy, 1, time.Now())
+				return
+			}
 
-				if e := proxyinabox.CI.UpsertProxy(p); e == nil {
-					if proxyinabox.Config.Debug {
-						fmt.Println("[PIAB]", "crawler", "[✅]", id, "find a available proxy", p)
-					}
-				} else {
-					fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
+			// New and recovered source candidates always receive a deep TLS
+			// integrity check before entering the live pool.
+			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+				fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
+				candidateFailures.recordFailure(proxy, 1, time.Now())
+				proxyinabox.CI.RecordFailure(p.IP)
+				return
+			}
+			verifiedAt := time.Now()
+			p.Country = trace.Loc
+			p.Delay = verifiedAt.Unix() - start
+			p.LastVerify = verifiedAt
+			p.LastDeepVerify = verifiedAt
+
+			if e := proxyinabox.CI.UpsertProxy(p); e == nil {
+				candidateFailures.clear(proxy)
+				if proxyinabox.Config.Debug {
+					fmt.Println("[PIAB]", "crawler", "[✅]", id, "find a available proxy", p)
 				}
+			} else {
+				fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
 			}
 		}()
 	}
@@ -207,7 +228,13 @@ func ValidateProxy(p proxyinabox.Proxy) (country string, delay int64, err error)
 	proxy := p.URI()
 	start := time.Now().Unix()
 
-	body, err := GetURLThroughProxyWithRetry(verifyEndpoint, time.Second*7, proxy, 2)
+	body, err := getURLThroughProxyWithRetryLimit(
+		verifyEndpoint,
+		time.Second*7,
+		proxy,
+		configuredHealthCheckRetries(),
+		configuredHealthResponseBodyLimit(),
+	)
 	if err != nil {
 		return "", 0, fmt.Errorf("connect failed: %w", err)
 	}
@@ -226,6 +253,17 @@ func ValidateProxy(p proxyinabox.Proxy) (country string, delay int64, err error)
 
 // GetURLThroughProxyWithRetry fetches a URL through the given proxy with retry logic
 func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr string, retry int, customHeaders ...http.Header) ([]byte, error) {
+	return getURLThroughProxyWithRetryLimit(u, timeout, proxyAddr, retry, 0, customHeaders...)
+}
+
+func getURLThroughProxyWithRetryLimit(
+	u string,
+	timeout time.Duration,
+	proxyAddr string,
+	retry int,
+	responseBodyLimit int64,
+	customHeaders ...http.Header,
+) ([]byte, error) {
 	transport := &http.Transport{}
 
 	if proxyAddr != "" {
@@ -297,10 +335,22 @@ func GetURLThroughProxyWithRetry(u string, timeout time.Duration, proxyAddr stri
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
+		reader := io.Reader(resp.Body)
+		if responseBodyLimit > 0 {
+			reader = io.LimitReader(resp.Body, responseBodyLimit+1)
+		}
+		body, err := io.ReadAll(reader)
+		closeErr := resp.Body.Close()
 		if err != nil {
 			lastErr = err
+			continue
+		}
+		if closeErr != nil {
+			lastErr = closeErr
+			continue
+		}
+		if responseBodyLimit > 0 && int64(len(body)) > responseBodyLimit {
+			lastErr = fmt.Errorf("response body exceeds %d bytes", responseBodyLimit)
 			continue
 		}
 		return body, nil

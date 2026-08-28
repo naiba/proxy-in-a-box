@@ -10,7 +10,7 @@
 ## 功能特性
 
 - **YAML 驱动的数据源** — 所有代理源通过 YAML 配置定义，支持 Lua 脚本处理复杂逻辑
-- **无头浏览器抓取** — 集成 [Obscura](https://github.com/h4ckf0r0day/obscura)，默认开启防检测能力，处理 JS 渲染的页面（如 IPRoyal）
+- **无头浏览器抓取** — 集成 [Obscura](https://github.com/h4ckf0r0day/obscura)，默认开启防检测能力，处理复杂的 JS 渲染页面
 - **自动验证** — 并发代理验证，可配置工作线程数
 - **智能轮换** — 基于域名和 IP 限制自动分配代理
 - **TLS 指纹伪装** — 使用 uTLS 模拟 Chrome 浏览器指纹
@@ -113,12 +113,21 @@ upstream:
   request_timeout: 20s         # 单次 HTTP 上游请求总超时
   target_failure_ttl: 10m      # 代理与特定目标组合失败后的熔断时间
 
+# 代理健康检查（均可省略，以下为默认值）
+verification:
+  interval: 2h                 # 可用代理的普通复检间隔
+  deep_check_interval: 24h     # 额外 TLS 劫持探测间隔
+  retries: 2                   # 单轮验证最多尝试次数
+  response_body_limit: 16384   # 验证响应体上限（字节）
+
 # 无头浏览器配置（可选）
 # 需要带 stealth 构建特性的 Obscura v0.2.1+ — Docker 镜像已内置
 # Proxy-in-a-Box 默认使用 --stealth 启动 Obscura。
 obscura:
   bin: obscura                # 二进制路径（留空则使用 PATH 默认命令）
 ```
+
+失败端点会按 30 分钟、2 小时、6 小时、24 小时逐级退避；代理源重复返回同一不可用端点时也会遵守该退避，避免反复消耗服务器流量。
 
 ## 代理来源
 
@@ -127,9 +136,9 @@ obscura:
 ### `text` — 纯文本 IP:Port 列表
 
 ```yaml
-name: thespeedx-http
+name: example-text
 type: text
-url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
+url: "https://proxy-source.example/http.txt"
 protocol: http
 interval: 5m
 ```
@@ -137,9 +146,9 @@ interval: 5m
 ### `json` — JSON API + 字段路径提取
 
 ```yaml
-name: proxyscrape
+name: example-json
 type: json
-url: "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&format=json"
+url: "https://proxy-source.example/api/proxies"
 ip_field: "proxies.*.ip"
 port_field: "proxies.*.port"
 protocol_field: "proxies.*.protocol"
@@ -151,14 +160,14 @@ interval: 5m
 Lua 内置函数：`fetch(url, headers?)`、`sleep(ms)`、`json_decode(str)`、`json_encode(table)`、`browser_fetch(url)`、`browser_eval(expression)`
 
 ```yaml
-name: kuaidaili
+name: example-script
 type: script
 interval: 10m
 script: |
   local proxies = {}
   for page = 1, 5 do
     sleep(3000)
-    local body = fetch("https://www.kuaidaili.com/free/inha/" .. page)
+    local body = fetch("https://proxy-source.example/pages/" .. page)
     if body then
       local match = string.match(body, "fpsList = (.-);%s*\n")
       if match then
@@ -179,12 +188,12 @@ script: |
 使用 `obscura` 配置。`browser_fetch(url)` 导航无头浏览器并返回渲染后的 HTML。`browser_eval(expression)` 在已加载的页面上执行 JavaScript。Proxy-in-a-Box 默认使用带 stealth 构建特性的 Obscura 并传入 `--stealth`，同时将 Obscura 的导航、脚本、网络和 CDP 超时与客户端的 60 秒超时对齐。
 
 ```yaml
-name: iproyal
+name: example-browser
 type: script
 interval: 30m
 script: |
   local proxies = {}
-  local html = browser_fetch("https://iproyal.com/free-proxy-list/")
+  local html = browser_fetch("https://proxy-source.example/rendered-list")
   if not html then return proxies end
   local raw = browser_eval([[(function(){
     var rows = document.querySelectorAll('div.grid.min-w-\\[600px\\]');
@@ -238,7 +247,7 @@ script: |
 ## 性能测试
 
 ```bash
-ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
+ab -v4 -n100 -c10 -X 127.0.0.1:8080 https://target.example/resource
 ```
 
 ## 技术栈

@@ -22,8 +22,11 @@ type Proxy struct {
 	Delay    int64
 	// Available is persisted so a proxy removed after a failed health check is
 	// not silently restored to the live pool by a process restart.
-	Available  bool      `gorm:"not null;default:true;index:idx_proxy_reverify,priority:1"`
-	LastVerify time.Time `gorm:"index:idx_proxy_reverify,priority:2"`
+	Available           bool      `gorm:"not null;default:true;index:idx_proxy_reverify,priority:1"`
+	LastVerify          time.Time `gorm:"index:idx_proxy_reverify,priority:2"`
+	LastDeepVerify      time.Time
+	ConsecutiveFailures int       `gorm:"not null;default:0"`
+	NextVerifyAt        time.Time `gorm:"index"`
 }
 
 // ProxyService proxy service

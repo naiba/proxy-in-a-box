@@ -172,7 +172,7 @@ func TestMarkVerifySuccess_UpdatesDBAndCache(t *testing.T) {
 	proxyinabox.DB.First(&dbProxy, "ip = ?", "1.1.1.1")
 
 	newTime := time.Now()
-	c.MarkVerifySuccess(dbProxy, 42, newTime)
+	c.MarkVerifySuccess(dbProxy, 42, newTime, false)
 
 	all := c.GetAllProxies()
 	if len(all) != 1 {
@@ -221,7 +221,7 @@ func TestMarkVerifySuccess_RestoresRemovedProxyWithStoredMetadata(t *testing.T) 
 	}
 
 	verifiedAt := time.Now().Round(0)
-	c.MarkVerifySuccess(stored, 12, verifiedAt)
+	c.MarkVerifySuccess(stored, 12, verifiedAt, false)
 
 	all := c.GetAllProxies()
 	if len(all) != 1 {
@@ -261,7 +261,7 @@ func TestMarkVerifySuccess_DoesNotUndoActiveIPLock(t *testing.T) {
 		t.Fatal("precondition: IP should be locked")
 	}
 
-	c.MarkVerifySuccess(stored, 10, time.Now())
+	c.MarkVerifySuccess(stored, 10, time.Now(), false)
 
 	if !c.IsIPLocked(p.IP) {
 		t.Fatal("successful stale verification must not clear an active IP lock")
@@ -320,6 +320,78 @@ func TestMarkVerifyFailed_RemovesFromCacheKeepsDB(t *testing.T) {
 	}
 	if updated.Available {
 		t.Error("failed proxy should be persisted as unavailable")
+	}
+	if updated.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1", updated.ConsecutiveFailures)
+	}
+	remaining := time.Until(updated.NextVerifyAt)
+	if remaining < 29*time.Minute || remaining > 31*time.Minute {
+		t.Errorf("first retry delay = %s, want about 30m", remaining)
+	}
+	if c.IsProxyValidationDue(dbProxy.URI()) {
+		t.Error("failed proxy should not be eligible before NextVerifyAt")
+	}
+}
+
+func TestMarkVerifyFailed_UsesEscalatingEndpointBackoff(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "3.3.3.8", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now(),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy: %v", err)
+	}
+
+	for i, want := range proxyRetryBackoff {
+		var stored proxyinabox.Proxy
+		if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+			t.Fatalf("load proxy before failure %d: %v", i+1, err)
+		}
+		before := time.Now()
+		if got := c.MarkVerifyFailed(stored); got != i+1 {
+			t.Fatalf("failure count = %d, want %d", got, i+1)
+		}
+		if err := proxyinabox.DB.Where("id = ?", stored.ID).First(&stored).Error; err != nil {
+			t.Fatalf("reload proxy after failure %d: %v", i+1, err)
+		}
+		gotBackoff := stored.NextVerifyAt.Sub(before)
+		if gotBackoff < want-time.Second || gotBackoff > want+time.Second {
+			t.Fatalf("failure %d backoff = %s, want %s", i+1, gotBackoff, want)
+		}
+	}
+}
+
+func TestMarkVerifySuccessClearsBackoffAndRecordsDeepCheck(t *testing.T) {
+	setupTestDB(t)
+	c := newTestCache(t)
+	p := proxyinabox.Proxy{
+		IP: "3.3.3.9", Port: "8080", Protocol: "http",
+		Source: "test", LastVerify: time.Now().Add(-time.Hour),
+	}
+	if err := c.UpsertProxy(p); err != nil {
+		t.Fatalf("UpsertProxy: %v", err)
+	}
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Where("ip = ?", p.IP).First(&stored).Error; err != nil {
+		t.Fatalf("load proxy: %v", err)
+	}
+	c.MarkVerifyFailed(stored)
+
+	verifiedAt := time.Now().Round(0)
+	c.MarkVerifySuccess(stored, 3, verifiedAt, true)
+	if err := proxyinabox.DB.Where("id = ?", stored.ID).First(&stored).Error; err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	if !stored.Available || stored.ConsecutiveFailures != 0 || !stored.NextVerifyAt.IsZero() {
+		t.Fatalf("recovered state = {available:%t failures:%d next:%v}", stored.Available, stored.ConsecutiveFailures, stored.NextVerifyAt)
+	}
+	if !stored.LastDeepVerify.Equal(verifiedAt) {
+		t.Fatalf("LastDeepVerify = %v, want %v", stored.LastDeepVerify, verifiedAt)
+	}
+	if !c.IsProxyValidationDue(p.URI()) {
+		t.Fatal("recovered proxy should clear its retry delay")
 	}
 }
 
@@ -416,7 +488,7 @@ func TestQuarantinedProxyRecoversAfterLockExpires(t *testing.T) {
 	if err := proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("ip = ?", p.IP).Update("locked_until", expired).Error; err != nil {
 		t.Fatalf("expire lock: %v", err)
 	}
-	c.MarkVerifySuccess(stored, 4, time.Now())
+	c.MarkVerifySuccess(stored, 4, time.Now(), false)
 
 	if !c.HasProxy(p.URI()) {
 		t.Fatal("successful health check should restore the proxy after lock expiry")
@@ -693,6 +765,9 @@ func TestMarkProxyUnavailablePersistsAcrossReload(t *testing.T) {
 	reloaded.load()
 	if reloaded.ProxyLength() != 0 {
 		t.Fatalf("reloaded ProxyLength = %d, unavailable proxy must not return after restart", reloaded.ProxyLength())
+	}
+	if reloaded.IsProxyValidationDue(p.URI()) {
+		t.Fatal("persisted retry delay should survive cache reload")
 	}
 }
 

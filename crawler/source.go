@@ -171,6 +171,7 @@ func UpdateSourceAvailableCounts(proxies []proxyinabox.Proxy) {
 func fetchSource(src Source, statusIndex int) {
 	interval := src.intervalDuration()
 	for {
+		candidateFailures.prune(time.Now())
 		var proxies []proxyinabox.Proxy
 		var err error
 
@@ -227,7 +228,7 @@ func fetchJSONSource(src Source) ([]proxyinabox.Proxy, error) {
 }
 
 // parseTextResponse parses a plain text body where each line is ip:port
-// Handles spys.me format "ip:port EXTRA" by splitting on space first
+// Handles "ip:port EXTRA" text formats by splitting on space first.
 // 同时支持 "protocol://ip:port" 格式（如 trio666 源），自动提取协议并剥离前缀
 func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 	var proxies []proxyinabox.Proxy
@@ -237,7 +238,7 @@ func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 		if line == "" {
 			continue
 		}
-		// spys.me 格式: "ip:port COUNTRY-ANONYMITY-SSL-GOOGLE", 只取 ip:port 部分
+		// 兼容 "ip:port EXTRA" 格式，只取 ip:port 部分。
 		if idx := strings.IndexByte(line, ' '); idx != -1 {
 			line = line[:idx]
 		}

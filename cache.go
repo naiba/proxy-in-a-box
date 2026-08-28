@@ -12,6 +12,9 @@ type Cache interface {
 	ProxyLength() int
 	PickProxy(req *http.Request) (string, error)
 	HasProxy(p string) bool
+	// IsProxyValidationDue prevents source refreshes from bypassing the
+	// persisted retry delay of a quarantined endpoint.
+	IsProxyValidationDue(proxyURI string) bool
 	GetAllProxies() []Proxy
 
 	// --- 代理生命周期（DB + 内存原子操作） ---
@@ -22,11 +25,12 @@ type Cache interface {
 
 	// MarkVerifySuccess 已有代理定期验证成功时调用。
 	// 原子完成：清除 blocked_ips → 更新 DB delay/last_verify → 同步内存。
-	MarkVerifySuccess(p Proxy, delay int64, verifyTime time.Time)
+	MarkVerifySuccess(p Proxy, delay int64, verifyTime time.Time, deepVerified bool)
 
 	// MarkVerifyFailed 已有代理定期验证失败但未达锁定阈值时调用。
 	// 原子完成：在 DB 中持久化不可用状态 → 从内存移除。
-	MarkVerifyFailed(p Proxy)
+	// 返回该端点更新后的连续失败次数。
+	MarkVerifyFailed(p Proxy) int
 
 	// MarkProxyUnavailable 处理代理自身明确返回 403/407 的情况。
 	// 按 URI 隔离单个端点，等待定期健康检查恢复，不累计为整 IP 封禁。

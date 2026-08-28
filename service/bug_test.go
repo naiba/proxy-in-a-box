@@ -238,7 +238,7 @@ func TestPickProxy_NFieldRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < picksPerGoroutine; j++ {
-				req, _ := http.NewRequest("GET", fmt.Sprintf("http://site%d.com/path", j), nil)
+				req, _ := http.NewRequest("GET", fmt.Sprintf("http://site%d.example/path", j), nil)
 				req.Host = fmt.Sprintf("site%d.com", j)
 				c.PickProxy(req)
 			}
@@ -296,7 +296,7 @@ func TestConcurrent_ProxyOperations(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < operations; j++ {
-				req, _ := http.NewRequest("GET", fmt.Sprintf("http://site%d.com/path", j), nil)
+				req, _ := http.NewRequest("GET", fmt.Sprintf("http://site%d.example/path", j), nil)
 				req.Host = fmt.Sprintf("site%d.com", j)
 				c.PickProxy(req)
 			}

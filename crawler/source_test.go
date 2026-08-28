@@ -28,9 +28,9 @@ func TestParseTextResponse(t *testing.T) {
 			wantProto: "http",
 		},
 		{
-			name:      "spys.me format with extra fields",
+			name:      "extra fields are ignored",
 			body:      "1.2.3.4:8080 US-H-S+\n5.6.7.8:3128 CN-N!-\n",
-			src:       Source{Name: "spys", Protocol: "http"},
+			src:       Source{Name: "example-extra-fields", Protocol: "http"},
 			wantLen:   2,
 			checkIdx:  1,
 			wantIP:    "5.6.7.8",

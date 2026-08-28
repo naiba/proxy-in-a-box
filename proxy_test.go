@@ -104,6 +104,9 @@ func TestMigrateDBAddsAvailabilityAndDeduplicatesLegacyProxies(t *testing.T) {
 	if !migrated[0].Available {
 		t.Fatal("legacy proxy should default to available after migration")
 	}
+	if migrated[0].LastDeepVerify.IsZero() || !migrated[0].LastDeepVerify.Equal(migrated[0].LastVerify) {
+		t.Fatalf("legacy deep verification = %v, want last verification %v", migrated[0].LastDeepVerify, migrated[0].LastVerify)
+	}
 	if migrated[0].Protocol != "http" {
 		t.Fatalf("migrated protocol = %q, want http", migrated[0].Protocol)
 	}
@@ -116,6 +119,56 @@ func TestMigrateDBAddsAvailabilityAndDeduplicatesLegacyProxies(t *testing.T) {
 	}
 	if !db.Migrator().HasIndex(&Proxy{}, "idx_proxy_endpoint") {
 		t.Fatal("endpoint unique index was not created")
+	}
+}
+
+func TestMigrateDBDefersLegacyQuarantinedProxies(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE proxies (
+		id integer PRIMARY KEY AUTOINCREMENT,
+		created_at datetime,
+		updated_at datetime,
+		deleted_at datetime,
+		ip text,
+		port text,
+		country text,
+		provence text,
+		source text,
+		protocol text,
+		delay integer,
+		available numeric NOT NULL DEFAULT true,
+		last_verify datetime
+	)`).Error; err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	lastVerify := time.Now().Add(-time.Hour).Round(0)
+	if err := db.Exec(
+		"INSERT INTO proxies (ip, port, protocol, available, last_verify) VALUES (?, ?, ?, ?, ?)",
+		"2.3.4.5", "8080", "http", false, lastVerify,
+	).Error; err != nil {
+		t.Fatalf("insert quarantined proxy: %v", err)
+	}
+
+	before := time.Now()
+	if err := migrateDB(db); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var migrated Proxy
+	if err := db.First(&migrated).Error; err != nil {
+		t.Fatalf("load migrated proxy: %v", err)
+	}
+	if migrated.Available {
+		t.Fatal("quarantined proxy became available during migration")
+	}
+	delay := migrated.NextVerifyAt.Sub(before)
+	if delay < 29*time.Minute || delay > 31*time.Minute {
+		t.Fatalf("migrated retry delay = %s, want about 30m", delay)
+	}
+	if !migrated.LastDeepVerify.Equal(lastVerify) {
+		t.Fatalf("LastDeepVerify = %v, want %v", migrated.LastDeepVerify, lastVerify)
 	}
 }
 

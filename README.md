@@ -10,7 +10,7 @@ Automatic proxy pool for web scraping. Crawls proxies from YAML-defined sources,
 ## Features
 
 - **YAML-driven sources** — All proxy sources defined as YAML configs with Lua scripting for complex logic
-- **Headless browser scraping** — Integrated [Obscura](https://github.com/h4ckf0r0day/obscura) with anti-detection enabled by default for JS-rendered pages (e.g. IPRoyal)
+- **Headless browser scraping** — Integrated [Obscura](https://github.com/h4ckf0r0day/obscura) with anti-detection enabled by default for complex JS-rendered pages
 - **Auto-validation** — Concurrent proxy verification with configurable worker pool
 - **Smart rotation** — Automatic proxy assignment based on domain and IP limits
 - **TLS fingerprint spoofing** — Uses uTLS to mimic Chrome browser fingerprints
@@ -113,12 +113,21 @@ upstream:
   request_timeout: 20s         # total timeout for one upstream HTTP attempt
   target_failure_ttl: 10m      # circuit-breaker TTL for one proxy/target pair
 
+# Proxy health checks (all optional; defaults shown)
+verification:
+  interval: 2h                 # routine checks for available proxies
+  deep_check_interval: 24h     # additional TLS interception probe
+  retries: 2                   # attempts per health-check round
+  response_body_limit: 16384   # maximum health-check response bytes
+
 # Headless browser for JS-rendered pages (optional)
 # Requires Obscura v0.2.1+ with the stealth build feature — included in the Docker image
 # Proxy-in-a-Box starts Obscura with --stealth by default.
 obscura:
   bin: obscura                # binary path (leave empty to use PATH default)
 ```
+
+Failed endpoints back off for 30 minutes, 2 hours, 6 hours, and then 24 hours. Repeated candidates returned by a source respect the same delay instead of consuming bandwidth on every source refresh.
 
 ## Proxy Sources
 
@@ -127,9 +136,9 @@ Sources are YAML files in `data/sources/`. Three types supported:
 ### `text` — Plain text IP:Port lists
 
 ```yaml
-name: thespeedx-http
+name: example-text
 type: text
-url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
+url: "https://proxy-source.example/http.txt"
 protocol: http
 interval: 5m
 ```
@@ -137,9 +146,9 @@ interval: 5m
 ### `json` — JSON API with field paths
 
 ```yaml
-name: proxyscrape
+name: example-json
 type: json
-url: "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&format=json"
+url: "https://proxy-source.example/api/proxies"
 ip_field: "proxies.*.ip"
 port_field: "proxies.*.port"
 protocol_field: "proxies.*.protocol"
@@ -151,14 +160,14 @@ interval: 5m
 Lua globals: `fetch(url, headers?)`, `sleep(ms)`, `json_decode(str)`, `json_encode(table)`, `browser_fetch(url)`, `browser_eval(expression)`
 
 ```yaml
-name: kuaidaili
+name: example-script
 type: script
 interval: 10m
 script: |
   local proxies = {}
   for page = 1, 5 do
     sleep(3000)
-    local body = fetch("https://www.kuaidaili.com/free/inha/" .. page)
+    local body = fetch("https://proxy-source.example/pages/" .. page)
     if body then
       local match = string.match(body, "fpsList = (.-);%s*\n")
       if match then
@@ -179,12 +188,12 @@ script: |
 Uses `obscura` config. `browser_fetch(url)` navigates the headless browser and returns rendered HTML. `browser_eval(expression)` executes JavaScript on the loaded page. Proxy-in-a-Box starts the stealth-enabled Obscura build with `--stealth` and aligns Obscura's navigation, script, fetch, and CDP deadlines with the 60-second client timeout.
 
 ```yaml
-name: iproyal
+name: example-browser
 type: script
 interval: 30m
 script: |
   local proxies = {}
-  local html = browser_fetch("https://iproyal.com/free-proxy-list/")
+  local html = browser_fetch("https://proxy-source.example/rendered-list")
   if not html then return proxies end
   local raw = browser_eval([[(function(){
     var rows = document.querySelectorAll('div.grid.min-w-\\[600px\\]');
@@ -238,7 +247,7 @@ script: |
 ## Benchmark
 
 ```bash
-ab -v4 -n100 -c10 -X 127.0.0.1:8080 http://api.ip.la/cn
+ab -v4 -n100 -c10 -X 127.0.0.1:8080 https://target.example/resource
 ```
 
 ## Tech Stack

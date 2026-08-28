@@ -18,19 +18,20 @@ type testCache struct {
 	lockedOnce   sync.Once
 }
 
-func (c *testCache) RandomProxy() (string, bool)                           { return "", false }
-func (c *testCache) GetProxy() (string, bool)                              { return "", false }
-func (c *testCache) ProxyLength() int                                      { return 0 }
-func (c *testCache) PickProxy(*http.Request) (string, error)               { return "", nil }
-func (c *testCache) GetAllProxies() []proxyinabox.Proxy                    { return nil }
-func (c *testCache) UpsertProxy(proxyinabox.Proxy) error                   { return nil }
-func (c *testCache) MarkVerifySuccess(proxyinabox.Proxy, int64, time.Time) {}
-func (c *testCache) MarkVerifyFailed(proxyinabox.Proxy)                    {}
-func (c *testCache) MarkProxyUnavailable(string)                           {}
-func (c *testCache) MarkProxyTargetFailure(string, string)                 {}
-func (c *testCache) RecordFailure(string) bool                             { return false }
-func (c *testCache) LoadLockedIPs()                                        {}
-func (c *testCache) CleanupStaleProxies(time.Duration)                     {}
+func (c *testCache) RandomProxy() (string, bool)                                 { return "", false }
+func (c *testCache) GetProxy() (string, bool)                                    { return "", false }
+func (c *testCache) ProxyLength() int                                            { return 0 }
+func (c *testCache) PickProxy(*http.Request) (string, error)                     { return "", nil }
+func (c *testCache) IsProxyValidationDue(string) bool                            { return true }
+func (c *testCache) GetAllProxies() []proxyinabox.Proxy                          { return nil }
+func (c *testCache) UpsertProxy(proxyinabox.Proxy) error                         { return nil }
+func (c *testCache) MarkVerifySuccess(proxyinabox.Proxy, int64, time.Time, bool) {}
+func (c *testCache) MarkVerifyFailed(proxyinabox.Proxy) int                      { return 0 }
+func (c *testCache) MarkProxyUnavailable(string)                                 {}
+func (c *testCache) MarkProxyTargetFailure(string, string)                       {}
+func (c *testCache) RecordFailure(string) bool                                   { return false }
+func (c *testCache) LoadLockedIPs()                                              {}
+func (c *testCache) CleanupStaleProxies(time.Duration)                           {}
 
 func (c *testCache) HasProxy(string) bool {
 	if c.hasProxyHit != nil {

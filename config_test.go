@@ -19,6 +19,11 @@ upstream:
   response_header_timeout: 9s
   request_timeout: 15s
   target_failure_ttl: 2m
+verification:
+  interval: 3h
+  deep_check_interval: 36h
+  retries: 4
+  response_body_limit: 8192
 `)); err != nil {
 		t.Fatalf("read config: %v", err)
 	}
@@ -44,5 +49,17 @@ upstream:
 		if duration.got != duration.want {
 			t.Errorf("%s duration = %s, want %s", name, duration.got, duration.want)
 		}
+	}
+	if config.Verification.Interval != 3*time.Hour {
+		t.Errorf("verification interval = %s, want 3h", config.Verification.Interval)
+	}
+	if config.Verification.DeepCheckInterval != 36*time.Hour {
+		t.Errorf("deep check interval = %s, want 36h", config.Verification.DeepCheckInterval)
+	}
+	if config.Verification.Retries != 4 {
+		t.Errorf("verification retries = %d, want 4", config.Verification.Retries)
+	}
+	if config.Verification.ResponseBodyLimit != 8192 {
+		t.Errorf("verification response body limit = %d, want 8192", config.Verification.ResponseBodyLimit)
 	}
 }

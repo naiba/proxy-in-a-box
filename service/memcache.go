@@ -20,6 +20,23 @@ const (
 	defaultTargetFailureTTL  = 10 * time.Minute
 )
 
+var proxyRetryBackoff = [...]time.Duration{
+	30 * time.Minute,
+	2 * time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
+}
+
+func retryBackoffForFailure(failures int) time.Duration {
+	if failures <= 0 {
+		failures = 1
+	}
+	if failures > len(proxyRetryBackoff) {
+		failures = len(proxyRetryBackoff)
+	}
+	return proxyRetryBackoff[failures-1]
+}
+
 type proxyEntry struct {
 	p *proxyinabox.Proxy
 	n int64
@@ -56,10 +73,11 @@ type domainScheduling struct {
 }
 
 type MemCache struct {
-	proxies   *proxyList
-	domains   *domainScheduling
-	lockedIPs sync.Map
-	failureMu sync.Mutex
+	proxies         *proxyList
+	domains         *domainScheduling
+	lockedIPs       sync.Map
+	proxyRetryAfter sync.Map
+	failureMu       sync.Mutex
 }
 
 func NewMemCache() *MemCache {
@@ -87,9 +105,10 @@ func configuredTargetFailureTTL() time.Duration {
 }
 
 func (c *MemCache) load() {
+	now := time.Now()
 	var ps []proxyinabox.Proxy
 	err := proxyinabox.DB.Where("available = ?", true).Where("ip NOT IN (?)",
-		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", time.Now()),
+		proxyinabox.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", now),
 	).Find(&ps).Error
 	if err != nil {
 		panic(err)
@@ -99,6 +118,16 @@ func (c *MemCache) load() {
 	for i := 0; i < len(ps); i++ {
 		c.proxies.pl = append(c.proxies.pl, &proxyEntry{p: &ps[i]})
 		c.proxies.index[ps[i].URI()] = struct{}{}
+	}
+
+	var delayed []proxyinabox.Proxy
+	if err := proxyinabox.DB.Select("ip", "port", "protocol", "next_verify_at").
+		Where("available = ? AND next_verify_at > ?", false, now).
+		Find(&delayed).Error; err != nil {
+		panic(err)
+	}
+	for i := range delayed {
+		c.proxyRetryAfter.Store(delayed[i].URI(), delayed[i].NextVerifyAt)
 	}
 	fmt.Println("[PIAB]", "cache", "[✅]", "load", len(ps), "items!")
 }
@@ -183,6 +212,18 @@ func (c *MemCache) HasProxy(proxy string) bool {
 	defer c.proxies.l.Unlock()
 	_, has := c.proxies.index[proxy]
 	return has
+}
+
+func (c *MemCache) IsProxyValidationDue(proxyURI string) bool {
+	retryAt, ok := c.proxyRetryAfter.Load(proxyURI)
+	if !ok {
+		return true
+	}
+	if time.Now().Before(retryAt.(time.Time)) {
+		return false
+	}
+	c.proxyRetryAfter.Delete(proxyURI)
+	return true
 }
 
 func (c *MemCache) GetAllProxies() []proxyinabox.Proxy {
@@ -296,6 +337,8 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 		p.Protocol = "http"
 	}
 	p.Available = true
+	p.ConsecutiveFailures = 0
+	p.NextVerifyAt = time.Time{}
 
 	// BUG-FIX: 先查 DB 中是否已有相同 (IP, Port, Protocol) 的记录。
 	// 若有则复用其主键以触发 UPDATE 而非 INSERT，避免 uniqueIndex 冲突。
@@ -317,13 +360,14 @@ func (c *MemCache) UpsertProxy(p proxyinabox.Proxy) error {
 	}
 	c.proxies.pl = append(c.proxies.pl, &proxyEntry{p: &p, n: 0})
 	c.proxies.index[uri] = struct{}{}
+	c.proxyRetryAfter.Delete(uri)
 	// A successful source validation is a genuine health success. Clear any
 	// sub-threshold failures so they cannot accumulate across successful runs.
 	c.clearFailureLocked(p.IP)
 	return nil
 }
 
-func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTime time.Time) {
+func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTime time.Time, deepVerified bool) {
 	c.failureMu.Lock()
 	defer c.failureMu.Unlock()
 
@@ -335,11 +379,17 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	defer c.proxies.l.Unlock()
 
 	// BUG-FIX: 用显式 WHERE 定位 DB 记录，避免 p.ID 为零时 GORM 报 "WHERE conditions required"
-	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
-		"available":   true,
-		"delay":       delay,
-		"last_verify": verifyTime,
-	})
+	updates := map[string]interface{}{
+		"available":            true,
+		"consecutive_failures": 0,
+		"delay":                delay,
+		"last_verify":          verifyTime,
+		"next_verify_at":       time.Time{},
+	}
+	if deepVerified {
+		updates["last_deep_verify"] = verifyTime
+	}
+	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(updates)
 	if result.Error != nil {
 		fmt.Printf("[PIAB] verify [❎] update proxy %s: %v\n", p.URI(), result.Error)
 		return
@@ -353,12 +403,18 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	// 旧逻辑按 IP 匹配找到第一个就 return，同 IP 不同端口的其他 entry 的
 	// LastVerify 永远不会被更新，导致 dashboard 显示超过 2h 未验证的代理。
 	uri := p.URI()
+	c.proxyRetryAfter.Delete(uri)
 	for _, e := range c.proxies.pl {
 		if e.p.URI() == uri {
 			c.clearFailureLocked(p.IP)
 			e.p.Available = true
+			e.p.ConsecutiveFailures = 0
 			e.p.Delay = delay
 			e.p.LastVerify = verifyTime
+			e.p.NextVerifyAt = time.Time{}
+			if deepVerified {
+				e.p.LastDeepVerify = verifyTime
+			}
 			return
 		}
 	}
@@ -375,23 +431,33 @@ func (c *MemCache) MarkVerifySuccess(p proxyinabox.Proxy, delay int64, verifyTim
 	c.proxies.index[uri] = struct{}{}
 }
 
-func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
+func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) int {
 	c.failureMu.Lock()
 	defer c.failureMu.Unlock()
 
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Select("id", "consecutive_failures").Where("id = ?", p.ID).First(&stored).Error; err != nil {
+		fmt.Printf("[PIAB] verify [❎] load failed proxy %s: %v\n", p.URI(), err)
+		return 0
+	}
+	failures := stored.ConsecutiveFailures + 1
 	verifyTime := time.Now()
+	retryAt := verifyTime.Add(retryBackoffForFailure(failures))
 	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
-		"available":   false,
-		"last_verify": verifyTime,
+		"available":            false,
+		"consecutive_failures": failures,
+		"last_verify":          verifyTime,
+		"next_verify_at":       retryAt,
 	})
 	if result.Error != nil {
 		fmt.Printf("[PIAB] verify [❎] persist failed proxy %s: %v\n", p.URI(), result.Error)
-		return
+		return 0
 	}
 	if result.RowsAffected != 1 {
 		fmt.Printf("[PIAB] verify [⚠️] failed proxy %s no longer exists in database\n", p.URI())
-		return
+		return 0
 	}
+	c.proxyRetryAfter.Store(p.URI(), retryAt)
 
 	c.proxies.l.Lock()
 	defer c.proxies.l.Unlock()
@@ -399,6 +465,7 @@ func (c *MemCache) MarkVerifyFailed(p proxyinabox.Proxy) {
 	// BUG-FIX: 只移除验证失败的特定代理（按 URI），而非同 IP 的所有端口。
 	// 旧逻辑 removeFromCacheLocked(ip) 会误删同 IP 其他正常端口的代理。
 	c.removeByURIFromCacheLocked(p.URI())
+	return failures
 }
 
 func (c *MemCache) MarkProxyUnavailable(proxyURI string) {
@@ -419,9 +486,19 @@ func (c *MemCache) MarkProxyUnavailable(proxyURI string) {
 		return
 	}
 
+	var stored proxyinabox.Proxy
+	if err := proxyinabox.DB.Select("id", "consecutive_failures").Where("id = ?", proxyID).First(&stored).Error; err != nil {
+		fmt.Printf("[PIAB] proxy [❎] load %s for quarantine: %v\n", proxyURI, err)
+		return
+	}
+	failures := stored.ConsecutiveFailures + 1
+	verifyTime := time.Now()
+	retryAt := verifyTime.Add(retryBackoffForFailure(failures))
 	result := proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("id = ?", proxyID).Updates(map[string]interface{}{
-		"available":   false,
-		"last_verify": time.Now(),
+		"available":            false,
+		"consecutive_failures": failures,
+		"last_verify":          verifyTime,
+		"next_verify_at":       retryAt,
 	})
 	if result.Error != nil {
 		fmt.Printf("[PIAB] proxy [❎] quarantine %s: %v\n", proxyURI, result.Error)
@@ -432,8 +509,9 @@ func (c *MemCache) MarkProxyUnavailable(proxyURI string) {
 		return
 	}
 
+	c.proxyRetryAfter.Store(proxyURI, retryAt)
 	c.removeByURIFromCacheLocked(proxyURI)
-	fmt.Printf("[PIAB] proxy [⚠️] quarantined %s after an upstream authentication/forbidden response\n", proxyURI)
+	fmt.Printf("[PIAB] proxy [⚠️] quarantined %s until %s after an upstream authentication/forbidden response\n", proxyURI, retryAt.Format(time.RFC3339))
 }
 
 func (c *MemCache) RecordFailure(ip string) bool {

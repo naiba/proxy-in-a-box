@@ -42,6 +42,14 @@ type Conf struct {
 		RequestTimeout        time.Duration `mapstructure:"request_timeout"`
 		TargetFailureTTL      time.Duration `mapstructure:"target_failure_ttl"`
 	} `mapstructure:"upstream"`
+	// Verification controls recurring health checks. Zero values use the
+	// conservative defaults defined by the crawler and service packages.
+	Verification struct {
+		Interval          time.Duration `mapstructure:"interval"`
+		DeepCheckInterval time.Duration `mapstructure:"deep_check_interval"`
+		Retries           int           `mapstructure:"retries"`
+		ResponseBodyLimit int64         `mapstructure:"response_body_limit"`
+	} `mapstructure:"verification"`
 	// EnableMITM 是否启用 HTTPS 中间人解密，默认 false（关闭时走 TCP 隧道透传，客户端无需关闭 TLS 验证）
 	EnableMITM bool `mapstructure:"enable_mitm"`
 }
@@ -74,7 +82,11 @@ func initDB() {
 func migrateDB(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		migrator := tx.Migrator()
+		hadNextVerifyAt := false
+		hadLastDeepVerify := false
 		if migrator.HasTable(&Proxy{}) {
+			hadNextVerifyAt = migrator.HasColumn(&Proxy{}, "NextVerifyAt")
+			hadLastDeepVerify = migrator.HasColumn(&Proxy{}, "LastDeepVerify")
 			// Add this independently of the rest of AutoMigrate. Startup queries
 			// depend on it, so a failed migration must never be allowed to look
 			// successful and fail later in MemCache.load.
@@ -116,6 +128,25 @@ func migrateDB(db *gorm.DB) error {
 		}
 		if !tx.Migrator().HasColumn(&Proxy{}, "Available") {
 			return fmt.Errorf("proxies.available is missing after migration")
+		}
+		// Avoid a thundering herd on the first startup after introducing retry
+		// scheduling. Existing quarantined rows wait for the initial 30-minute
+		// window instead of all being tested immediately.
+		if !hadNextVerifyAt {
+			if err := tx.Model(&Proxy{}).
+				Where("available = ?", false).
+				Update("next_verify_at", time.Now().Add(30*time.Minute)).Error; err != nil {
+				return fmt.Errorf("schedule legacy quarantined proxies: %w", err)
+			}
+		}
+		// Every successful verification in the previous release included the TLS
+		// integrity probe, so last_verify is a safe seed for last_deep_verify.
+		if !hadLastDeepVerify {
+			if err := tx.Model(&Proxy{}).
+				Where("last_verify > ?", time.Time{}).
+				Update("last_deep_verify", gorm.Expr("last_verify")).Error; err != nil {
+				return fmt.Errorf("seed legacy deep verification times: %w", err)
+			}
 		}
 		return nil
 	})

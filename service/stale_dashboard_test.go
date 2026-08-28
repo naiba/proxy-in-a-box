@@ -34,7 +34,7 @@ func TestMarkVerifySuccess_MultiPort_UpdatesCorrectEntry(t *testing.T) {
 	var dbP1 proxyinabox.Proxy
 	proxyinabox.DB.Where("ip = ? AND port = ?", "1.1.1.1", "8080").First(&dbP1)
 	newTime := time.Now()
-	c.MarkVerifySuccess(dbP1, 5, newTime)
+	c.MarkVerifySuccess(dbP1, 5, newTime, false)
 
 	// then: 只有 port 8080 的 LastVerify 被更新，port 3128 保持旧值
 	for _, p := range c.GetAllProxies() {
@@ -76,9 +76,9 @@ func TestMarkVerifySuccess_MultiPort_EachPortUpdatedIndependently(t *testing.T) 
 	proxyinabox.DB.Where("ip = ? AND port = ?", "2.2.2.2", "3128").First(&dbP2)
 
 	time1 := time.Now()
-	c.MarkVerifySuccess(dbP1, 3, time1)
+	c.MarkVerifySuccess(dbP1, 3, time1, false)
 	time2 := time.Now().Add(time.Second)
-	c.MarkVerifySuccess(dbP2, 7, time2)
+	c.MarkVerifySuccess(dbP2, 7, time2, false)
 
 	// then: 两个端口各自有正确的 LastVerify 和 Delay
 	for _, p := range c.GetAllProxies() {
@@ -165,7 +165,7 @@ func TestMarkVerifySuccess_DBAndCacheConsistency(t *testing.T) {
 	setupTestDB(t)
 	c := newTestCache(t)
 
-	oldTime := time.Now().Add(-2 * time.Hour)
+	oldTime := time.Now().Add(-3 * time.Hour)
 	p := proxyinabox.Proxy{
 		IP: "5.5.5.5", Port: "8080", Protocol: "http",
 		Source: "test", LastVerify: oldTime, Delay: 10,
@@ -183,7 +183,7 @@ func TestMarkVerifySuccess_DBAndCacheConsistency(t *testing.T) {
 	}
 
 	freshTime := time.Now()
-	c.MarkVerifySuccess(unverified[0], 3, freshTime)
+	c.MarkVerifySuccess(unverified[0], 3, freshTime, false)
 
 	// then: DB 和内存都反映更新
 	for _, cached := range c.GetAllProxies() {
@@ -210,7 +210,7 @@ func TestDashboard_FullVerifyFlow_ReflectsUpdate(t *testing.T) {
 	setupTestDB(t)
 	c := newTestCache(t)
 
-	staleTime := time.Now().Add(-30 * time.Minute)
+	staleTime := time.Now().Add(-3 * time.Hour)
 	p := proxyinabox.Proxy{
 		IP: "6.6.6.6", Port: "8080", Protocol: "http",
 		Source: "test", LastVerify: staleTime, Delay: 5,
@@ -224,7 +224,7 @@ func TestDashboard_FullVerifyFlow_ReflectsUpdate(t *testing.T) {
 		t.Fatal("should have 1 stale proxy")
 	}
 	freshTime := time.Now()
-	c.MarkVerifySuccess(unverified[0], 2, freshTime)
+	c.MarkVerifySuccess(unverified[0], 2, freshTime, false)
 
 	// then: Dashboard (GetAllProxies) 反映更新
 	for _, cached := range c.GetAllProxies() {
