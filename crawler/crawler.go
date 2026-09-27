@@ -191,7 +191,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			}
 
 			if err != nil || trace.IP != p.IP {
-				checkCounters.candidateFailure.Add(1)
+				checkCounters.recordCandidate(false)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				return
 			}
@@ -199,7 +199,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			// New and recovered source candidates always receive a deep TLS
 			// integrity check before entering the live pool.
 			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
-				checkCounters.candidateFailure.Add(1)
+				checkCounters.recordCandidate(false)
 				fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				proxyinabox.CI.RecordFailure(p.IP)
@@ -212,13 +212,13 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			p.LastDeepVerify = verifiedAt
 
 			if e := proxyinabox.CI.UpsertProxy(p); e == nil {
-				checkCounters.candidateSuccess.Add(1)
+				checkCounters.recordCandidate(true)
 				candidateFailures.clear(proxy)
 				if proxyinabox.Config.Debug {
 					fmt.Println("[PIAB]", "crawler", "[✅]", id, "find a available proxy", p)
 				}
 			} else {
-				checkCounters.candidateFailure.Add(1)
+				checkCounters.recordCandidate(false)
 				fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
 			}
 		}()

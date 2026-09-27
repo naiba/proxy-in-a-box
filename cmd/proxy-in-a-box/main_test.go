@@ -30,7 +30,7 @@ func TestMaintenanceSummary_SourceStateAndJSON(t *testing.T) {
 		{Name: "ok", LastFetch: time.Now()},
 		{Name: "failed", LastFetch: time.Now(), Error: "unreachable"},
 		{Name: "pending"},
-	})
+	}, &backlogHistory{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestMaintenanceSummary_SourceStateAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"healthy_due", "quarantined_ready", "quarantined_waiting", "source_errors", "checks"} {
+	for _, field := range []string{"healthy_due", "quarantined_ready", "quarantined_waiting", "source_errors", "checks", "checks_recent_60m", "trend", "levels"} {
 		if !strings.Contains(string(data), `"`+field+`"`) {
 			t.Errorf("missing dashboard JSON field %q: %s", field, data)
 		}
@@ -49,7 +49,7 @@ func TestMaintenanceSummary_SourceStateAndJSON(t *testing.T) {
 }
 
 func TestDashboardDisplaysMaintenanceStats(t *testing.T) {
-	for _, id := range []string{"statChecksDue", "statWaiting", "statSourceHealth", "statHealthChecks"} {
+	for _, id := range []string{"statChecksDue", "statWaiting", "statSourceHealth", "statHealthChecks", "statusChecksDue", "statusWaiting", "statusSourceHealth", "statusHealthChecks"} {
 		if !strings.Contains(dashboardHTML, `id="`+id+`"`) {
 			t.Errorf("dashboard missing %s", id)
 		}

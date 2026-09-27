@@ -163,6 +163,8 @@ var rootCmd = &cobra.Command{
 		// 每天凌晨清理超过 6 个月未验证的陈旧代理记录
 		c.AddFunc("0 0 3 * * *", crawler.CleanupStaleProxies)
 		c.Start()
+		proxyService := &service.ProxyService{DB: proxyinabox.DB}
+		backlog := &backlogHistory{}
 
 		// 信号处理：统一的清理路径，确保 Obscura 子进程被完整回收
 		// os.Exit 不会触发 defer，所以必须在信号处理中显式调用清理函数
@@ -217,7 +219,7 @@ var rootCmd = &cobra.Command{
 			}
 			var blockedIPCount int64
 			proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("locked_until > ?", time.Now()).Count(&blockedIPCount)
-			maintenance, err := maintenanceSummary(&service.ProxyService{DB: proxyinabox.DB}, crawler.GetSourceStatuses())
+			maintenance, err := maintenanceSummary(proxyService, crawler.GetSourceStatuses(), backlog, int64(len(proxies)))
 			if err != nil {
 				http.Error(w, "failed to load maintenance stats", http.StatusInternalServerError)
 				return
@@ -290,6 +292,7 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		fmt.Printf("[PIAB] startup [✅] management listening on %s after %s\n", listener.Addr(), time.Since(startupStarted).Round(time.Millisecond))
+		startBacklogSampler(proxyService, backlog)
 		crawler.FetchAllSources(sources)
 		if err := serveManager(listener, managerHttpServer, verifyCronJob, crawler.CleanupStaleProxies); err != nil {
 			fmt.Println("[PIAB]", "panic", "[👻]", err)
@@ -344,9 +347,12 @@ type maintenanceSnapshot struct {
 	SourceErrors  int                       `json:"source_errors"`
 	SourcePending int                       `json:"source_pending"`
 	Checks        crawler.VerificationStats `json:"checks"`
+	RecentChecks  crawler.VerificationStats `json:"checks_recent_60m"`
+	Trend         backlogTrend              `json:"trend"`
+	Levels        maintenanceLevels         `json:"levels"`
 }
 
-func maintenanceSummary(ps *service.ProxyService, sources []crawler.SourceStatus) (maintenanceSnapshot, error) {
+func maintenanceSummary(ps *service.ProxyService, sources []crawler.SourceStatus, history *backlogHistory, available int64) (maintenanceSnapshot, error) {
 	counts, err := ps.GetMaintenanceStats()
 	if err != nil {
 		return maintenanceSnapshot{}, err
@@ -355,6 +361,8 @@ func maintenanceSummary(ps *service.ProxyService, sources []crawler.SourceStatus
 		MaintenanceStats: counts,
 		SourceTotal:      len(sources),
 		Checks:           crawler.GetVerificationStats(),
+		RecentChecks:     crawler.GetRecentVerificationStats(),
+		Trend:            history.trend(time.Now(), counts),
 	}
 	for _, src := range sources {
 		if src.LastFetch.IsZero() {
@@ -363,6 +371,7 @@ func maintenanceSummary(ps *service.ProxyService, sources []crawler.SourceStatus
 			snapshot.SourceErrors++
 		}
 	}
+	snapshot.Levels = classifyMaintenance(snapshot, available)
 	return snapshot, nil
 }
 

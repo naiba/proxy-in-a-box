@@ -90,6 +90,9 @@ GET /api/sources  — Source fetch statuses (JSON)
 
 `maintenance` reports healthy proxies due for checking, quarantined proxies ready for retry or still waiting (including IP locks), source errors and pending first fetches, and periodic/source-candidate check outcomes since process start. Check totals count checks, not individual HTTP retries, and reset on restart.
 
+Dashboard colors use a separate rolling 60-minute check count and 10-minute backlog trend sampled every 5 minutes: green is healthy, yellow means sustained backlog or partial source errors, red means significant growth or widespread failures, and gray means insufficient data. Periodic checks need at least 10 samples before applying failure-rate thresholds (green at 20% or less, red above 50%); source-candidate checks are shown separately. Quarantined endpoints waiting for retry are expected and stay neutral unless the waiting count grows substantially. Recent counts and trends reset on restart.
+Checks due turn yellow after ten minutes without a decline, and red when still growing above `max(20, 20% of available proxies)`. Waiting retries turn yellow only after consecutive growth, at least a doubling, and `max(10, 10% of available proxies)`; larger threefold growth can turn red. Source errors turn red when at least half of the sources are failing.
+
 ## Configuration
 
 `data/pb.yaml`:

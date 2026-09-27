@@ -35,6 +35,12 @@ a{color:var(--blue);text-decoration:none}
 .stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:6px}
 .stat-card .value{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--text-bright)}
 .stat-card .sub{font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-top:6px}
+.stat-card .status-pill{float:right;font-size:10px;letter-spacing:0;text-transform:none;border:1px solid currentColor;border-radius:3px;padding:1px 5px}
+.stat-card.status-green{border-color:#3dd68c55}.stat-card.status-green .value,.stat-card.status-green .status-pill{color:var(--green)}
+.stat-card.status-yellow{border-color:#f59e4255}.stat-card.status-yellow .value,.stat-card.status-yellow .status-pill{color:var(--orange)}
+.stat-card.status-red{border-color:#f0585855}.stat-card.status-red .value,.stat-card.status-red .status-pill{color:var(--red)}
+.stat-card.status-gray .value,.stat-card.status-gray .status-pill{color:var(--text-dim)}
+.stat-card.status-neutral .status-pill{color:var(--blue)}
 .protocol-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .proto-badge{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:3px;font-weight:500}
 .proto-http{background:#4d9ef520;color:var(--blue);border:1px solid #4d9ef540}
@@ -108,10 +114,10 @@ tr:hover td{background:#ffffff06}
 
   <div class="section"><h2>Maintenance</h2></div>
   <div class="stats">
-    <div class="stat-card" title="Endpoints ready for a periodic health check; actively blocked IPs are excluded"><div class="label">Checks Due</div><div class="value" id="statChecksDue">—</div><div class="sub" id="statChecksDueSub">healthy / retry ready</div></div>
-    <div class="stat-card" title="Quarantined endpoints waiting for their retry time or IP lock to expire"><div class="label">Waiting for Retry</div><div class="value" id="statWaiting">—</div><div class="sub" id="statWaitingSub">quarantined endpoints</div></div>
-    <div class="stat-card" title="Latest fetch state of configured proxy sources"><div class="label">Source Health</div><div class="value" id="statSourceHealth">—</div><div class="sub" id="statSourceHealthSub">errors / pending / total</div></div>
-    <div class="stat-card" title="Completed health checks since this process started; retries within a check are not counted separately"><div class="label">Health Checks</div><div class="value" id="statHealthChecks">—</div><div class="sub" id="statHealthChecksSub">success / failed since start</div></div>
+    <div class="stat-card status-gray" id="cardChecksDue" title="Endpoints ready for a periodic health check; actively blocked IPs are excluded"><div class="label">Checks Due <span class="status-pill" id="statusChecksDue">Collecting</span></div><div class="value" id="statChecksDue">—</div><div class="sub" id="statChecksDueSub">healthy / retry ready</div></div>
+    <div class="stat-card status-neutral" id="cardWaiting" title="Quarantined endpoints waiting for their retry time or IP lock to expire"><div class="label">Waiting for Retry <span class="status-pill" id="statusWaiting">Expected</span></div><div class="value" id="statWaiting">—</div><div class="sub" id="statWaitingSub">quarantined endpoints</div></div>
+    <div class="stat-card status-gray" id="cardSourceHealth" title="Latest fetch state of configured proxy sources"><div class="label">Source Health <span class="status-pill" id="statusSourceHealth">Collecting</span></div><div class="value" id="statSourceHealth">—</div><div class="sub" id="statSourceHealthSub">errors / pending / total</div></div>
+    <div class="stat-card status-gray" id="cardHealthChecks" title="Periodic health-check rate in the last 60 minutes; candidate checks are shown separately"><div class="label">Routine Checks <span class="status-pill" id="statusHealthChecks">Collecting</span></div><div class="value" id="statHealthChecks">—</div><div class="sub" id="statHealthChecksSub">success / failed in 60m</div></div>
   </div>
 
   <div class="section"><h2>Sources</h2></div>
@@ -168,6 +174,15 @@ tr:hover td{background:#ffffff06}
     return(b/Math.pow(1024,i)).toFixed(i>0?1:0)+' '+u[i];
   }
 
+  function paintStatus(cardId,labelId,status){
+    var names={green:'Healthy',yellow:'Attention',red:'Critical',gray:'Collecting',neutral:'Expected'};
+    var card=document.getElementById(cardId);
+    ['green','yellow','red','gray','neutral'].forEach(function(name){card.classList.remove('status-'+name)});
+    if(!Object.prototype.hasOwnProperty.call(names,status))status='gray';
+    card.classList.add('status-'+status);
+    document.getElementById(labelId).textContent=names[status];
+  }
+
   function renderStats(stats){
     var t=stats.total||0;
     document.getElementById('statTotal').textContent=t;
@@ -192,19 +207,21 @@ tr:hover td{background:#ffffff06}
 
     document.getElementById('statBlocked').textContent=stats.blocked_ips||0;
 
-    var m=stats.maintenance||{},checks=m.checks||{};
+    var m=stats.maintenance||{},checks=m.checks_recent_60m||{},trend=m.trend||{},levels=m.levels||{};
     var healthyDue=m.healthy_due||0,retryReady=m.quarantined_ready||0;
     document.getElementById('statChecksDue').textContent=healthyDue+retryReady;
-    document.getElementById('statChecksDueSub').textContent='healthy: '+healthyDue+' / retry ready: '+retryReady;
+    document.getElementById('statChecksDueSub').textContent='healthy: '+healthyDue+' / retry ready: '+retryReady+'; '+(trend.ready?'10m change: '+(trend.due_delta>0?'+':'')+trend.due_delta:'collecting 10m trend');
     document.getElementById('statWaiting').textContent=m.quarantined_waiting||0;
-    document.getElementById('statWaitingSub').textContent='includes IP-locked endpoints';
+    document.getElementById('statWaitingSub').textContent='includes IP locks; '+(trend.ready?'10m change: '+(trend.waiting_delta>0?'+':'')+trend.waiting_delta:'collecting 10m trend');
     var sourceTotal=m.source_total||0,sourceErrors=m.source_errors||0,sourcePending=m.source_pending||0;
     document.getElementById('statSourceHealth').textContent=(sourceTotal-sourceErrors-sourcePending)+' / '+sourceTotal;
     document.getElementById('statSourceHealthSub').textContent='errors: '+sourceErrors+' / pending: '+sourcePending;
-    var successes=(checks.routine_success||0)+(checks.candidate_success||0);
-    var failures=(checks.routine_failure||0)+(checks.candidate_failure||0);
-    document.getElementById('statHealthChecks').textContent=successes+' / '+failures;
-    document.getElementById('statHealthChecksSub').textContent='periodic: '+(checks.routine_success||0)+' / '+(checks.routine_failure||0)+'; new: '+(checks.candidate_success||0)+' / '+(checks.candidate_failure||0)+' (since start)';
+    document.getElementById('statHealthChecks').textContent=(checks.routine_success||0)+' / '+(checks.routine_failure||0);
+    document.getElementById('statHealthChecksSub').textContent='source candidates: '+(checks.candidate_success||0)+' / '+(checks.candidate_failure||0)+' (last 60m)';
+    paintStatus('cardChecksDue','statusChecksDue',levels.due);
+    paintStatus('cardWaiting','statusWaiting',levels.waiting);
+    paintStatus('cardSourceHealth','statusSourceHealth',levels.sources);
+    paintStatus('cardHealthChecks','statusHealthChecks',levels.checks);
 
     var rs=stats.request_stats||{};
     var rsTotal=rs.total||{};
