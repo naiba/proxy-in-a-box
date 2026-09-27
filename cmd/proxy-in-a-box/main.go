@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -131,9 +132,12 @@ var rootCmd = &cobra.Command{
 	Short: "Proxy-in-a-Box provide many proxies.",
 	Long:  `Proxy-in-a-Box helps programmers quickly and easily develop powerful crawler services. one-script, easy-to-use: proxies in a box.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		startupStarted := time.Now()
 		proxyinabox.Init(configFilePath)
+		fmt.Printf("[PIAB] startup [⏱️] database ready after %s\n", time.Since(startupStarted).Round(time.Millisecond))
 		fmt.Println("[PIAB]", "main", "[😁]", proxyinabox.Config.Sys.Name, version)
 		proxyinabox.CI = service.NewMemCache()
+		fmt.Printf("[PIAB] startup [⏱️] cache ready after %s\n", time.Since(startupStarted).Round(time.Millisecond))
 
 		crawler.Init()
 
@@ -148,10 +152,6 @@ var rootCmd = &cobra.Command{
 			fmt.Println("[PIAB]", "panic", "[👻]", err)
 			os.Exit(1)
 		}
-		crawler.FetchAllSources(sources)
-		crawler.Verify()
-		crawler.CleanupStaleProxies()
-
 		c := cron.New(cron.WithSeconds())
 		// 每 5 分钟拉取一次，确保过期代理能及时被重新验证；前一轮尚未
 		// 完成时跳过本轮，避免重复投递陈旧代理。
@@ -284,7 +284,14 @@ var rootCmd = &cobra.Command{
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(crawler.GetSourceStatuses())
 		})
-		if err := http.ListenAndServe(manageAddr, managerHttpServer); err != nil {
+		listener, err := net.Listen("tcp", manageAddr)
+		if err != nil {
+			fmt.Println("[PIAB]", "panic", "[👻]", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[PIAB] startup [✅] management listening on %s after %s\n", listener.Addr(), time.Since(startupStarted).Round(time.Millisecond))
+		crawler.FetchAllSources(sources)
+		if err := serveManager(listener, managerHttpServer, verifyCronJob, crawler.CleanupStaleProxies); err != nil {
 			fmt.Println("[PIAB]", "panic", "[👻]", err)
 			os.Exit(1)
 		}
@@ -319,6 +326,16 @@ func main() {
 
 func skipIfStillRunning(job func()) cron.Job {
 	return cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(job))
+}
+
+func serveManager(listener net.Listener, handler http.Handler, initialVerification cron.Job, cleanup func()) error {
+	// The port is bound before any potentially slow proxy check starts. Use the
+	// same job as the cron scheduler so startup and periodic scans cannot overlap.
+	go func() {
+		initialVerification.Run()
+		cleanup()
+	}()
+	return http.Serve(listener, handler)
 }
 
 type maintenanceSnapshot struct {
