@@ -136,6 +136,50 @@ func TestGetUnVerified_UsesConfiguredHealthyInterval(t *testing.T) {
 	}
 }
 
+func TestGetMaintenanceStats_MatchesEligibleProxiesAndLocks(t *testing.T) {
+	previousConfig := proxyinabox.Config
+	proxyinabox.Config.Verification.Interval = 4 * time.Hour
+	t.Cleanup(func() { proxyinabox.Config = previousConfig })
+
+	db := setupTestDB(t)
+	now := time.Now()
+	proxies := []proxyinabox.Proxy{
+		{IP: "1.1.1.1", Port: "8080", Protocol: "http", LastVerify: now.Add(-5 * time.Hour)}, // healthy due
+		{IP: "1.1.1.2", Port: "8080", Protocol: "http", LastVerify: now.Add(-3 * time.Hour)}, // healthy fresh
+		{IP: "1.1.1.3", Port: "8080", Protocol: "http", LastVerify: now.Add(-5 * time.Hour)}, // healthy locked
+		{IP: "1.1.1.4", Port: "8080", Protocol: "http", NextVerifyAt: now.Add(-time.Minute)}, // quarantined due
+		{IP: "1.1.1.5", Port: "8080", Protocol: "http", NextVerifyAt: now.Add(time.Hour)},    // retry deferred
+		{IP: "1.1.1.6", Port: "8080", Protocol: "http", NextVerifyAt: now.Add(-time.Minute)}, // retry locked
+	}
+	for i := range proxies {
+		if err := db.Create(&proxies[i]).Error; err != nil {
+			t.Fatalf("create proxy: %v", err)
+		}
+		if i >= 3 {
+			if err := db.Model(&proxies[i]).Update("available", false).Error; err != nil {
+				t.Fatalf("quarantine proxy: %v", err)
+			}
+		}
+	}
+	for _, ip := range []string{"1.1.1.3", "1.1.1.6"} {
+		if err := db.Create(&proxyinabox.BlockedIP{IP: ip, LockedUntil: now.Add(time.Hour)}).Error; err != nil {
+			t.Fatalf("lock IP: %v", err)
+		}
+	}
+	ps := &ProxyService{DB: db}
+	stats, err := ps.GetMaintenanceStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HealthyDue != 1 || stats.QuarantinedReady != 1 || stats.QuarantinedWaiting != 2 {
+		t.Fatalf("maintenance stats = %+v, want healthy=1 ready=1 waiting=2", stats)
+	}
+	eligible, err := ps.GetUnVerified()
+	if err != nil || len(eligible) != 2 {
+		t.Fatalf("eligible proxies = %v, err = %v; want 2", eligible, err)
+	}
+}
+
 func TestIsUnVerified_RefreshesCurrentState(t *testing.T) {
 	db := setupTestDB(t)
 	p := proxyinabox.Proxy{

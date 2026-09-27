@@ -23,6 +23,38 @@ type ProxyService struct {
 	DB *gorm.DB
 }
 
+// MaintenanceStats describes endpoints waiting for a periodic health check.
+// Locked IPs are excluded from due counts, just as in GetUnVerified.
+type MaintenanceStats struct {
+	HealthyDue         int64 `json:"healthy_due"`
+	QuarantinedReady   int64 `json:"quarantined_ready"`
+	QuarantinedWaiting int64 `json:"quarantined_waiting"`
+}
+
+func (ps *ProxyService) GetMaintenanceStats() (MaintenanceStats, error) {
+	var stats MaintenanceStats
+	now := time.Now()
+	unlocked := "ip NOT IN (?)"
+	lockedIPs := ps.DB.Table("blocked_ips").Select("ip").Where("locked_until > ?", now)
+	if err := ps.DB.Model(&proxyinabox.Proxy{}).
+		Where("available = ? AND last_verify < ?", true, now.Add(-proxyVerifyInterval())).
+		Where(unlocked, lockedIPs).Count(&stats.HealthyDue).Error; err != nil {
+		return stats, err
+	}
+	if err := ps.DB.Model(&proxyinabox.Proxy{}).
+		Where("available = ? AND next_verify_at <= ?", false, now).
+		Where(unlocked, lockedIPs).Count(&stats.QuarantinedReady).Error; err != nil {
+		return stats, err
+	}
+	var quarantinedTotal int64
+	if err := ps.DB.Model(&proxyinabox.Proxy{}).
+		Where("available = ?", false).Count(&quarantinedTotal).Error; err != nil {
+		return stats, err
+	}
+	stats.QuarantinedWaiting = quarantinedTotal - stats.QuarantinedReady
+	return stats, nil
+}
+
 // GetUnVerified get un verified proxies
 func (ps *ProxyService) GetUnVerified() (p []proxyinabox.Proxy, e error) {
 	// BUG-FIX: 必须包含 protocol 字段，否则所有代理在重新验证时 Protocol 为空，

@@ -200,6 +200,10 @@ func TestSourceIntervalDuration(t *testing.T) {
 		{"1h", 60},
 		{"", 5},
 		{"invalid", 5},
+		{"0", 5},
+		{"0s", 5},
+		{"-1s", 5},
+		{"-5m", 5},
 	}
 	for _, tt := range tests {
 		s := Source{Interval: tt.interval}

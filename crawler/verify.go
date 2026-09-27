@@ -101,12 +101,14 @@ func getDelay(pc chan proxyinabox.Proxy) {
 				}
 			}
 			proxyinabox.CI.MarkVerifySuccess(p, delay, time.Now(), deepVerified)
+			checkCounters.routineSuccess.Add(1)
 			candidateFailures.clear(proxy)
 		}()
 	}
 }
 
 func recordHealthCheckFailure(p proxyinabox.Proxy) {
+	checkCounters.routineFailure.Add(1)
 	failures := proxyinabox.CI.MarkVerifyFailed(p)
 	candidateFailures.recordFailure(p.URI(), failures, time.Now())
 	proxyinabox.CI.RecordFailure(p.IP)

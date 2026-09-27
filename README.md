@@ -80,13 +80,15 @@ HTTPS Proxy: https://127.0.0.1:8081
 Management Dashboard & API:
 
 ```
-GET /             — Web dashboard (pool overview, proxy list, source status)
+GET /             — Web dashboard (pool, verification backlog, quarantined retries, source status)
 GET /stat         — Pool statistics (plain text)
 GET /get          — Get one available proxy
-GET /api/stats    — Pool statistics (JSON: available/quarantined totals, by protocol/source, blocked IPs, request stats)
+GET /api/stats    — Pool statistics (JSON: available/quarantined totals, by protocol/source, blocked IPs, request stats, maintenance)
 GET /api/proxies  — Full proxy list (JSON)
 GET /api/sources  — Source fetch statuses (JSON)
 ```
+
+`maintenance` reports healthy proxies due for checking, quarantined proxies ready for retry or still waiting (including IP locks), source errors and pending first fetches, and periodic/source-candidate check outcomes since process start. Check totals count checks, not individual HTTP retries, and reset on restart.
 
 ## Configuration
 

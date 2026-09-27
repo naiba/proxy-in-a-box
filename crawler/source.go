@@ -62,7 +62,7 @@ func (s Source) intervalDuration() time.Duration {
 		return 5 * time.Minute
 	}
 	d, err := time.ParseDuration(s.Interval)
-	if err != nil {
+	if err != nil || d <= 0 {
 		return 5 * time.Minute
 	}
 	return d

@@ -101,9 +101,17 @@ tr:hover td{background:#ffffff06}
     <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="stat-card-scrollable"><div class="protocol-badges" id="protoBadges"></div></div></div>
     <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="stat-card-scrollable"><div class="sub" id="statSourcesSub"></div></div></div>
     <div class="stat-card"><div class="label">Processes</div><div class="value" id="statProcesses">—</div><div class="stat-card-scrollable"><div class="process-badges" id="processBadges"></div></div></div>
-    <div class="stat-card"><div class="label">Blocked IPs</div><div class="value" id="statBlocked">—</div><div class="stat-card-scrollable"><div class="sub" id="statBlockedSub">locked for 15 days</div></div></div>
+    <div class="stat-card"><div class="label">Blocked IPs</div><div class="value" id="statBlocked">—</div><div class="stat-card-scrollable"><div class="sub" id="statBlockedSub">locked for 6 hours</div></div></div>
     <div class="stat-card"><div class="label">Requests</div><div class="value" id="statRequests">—</div><div class="stat-card-scrollable"><div class="sub" id="statRequestsSub"></div></div></div>
     <div class="stat-card"><div class="label">Traffic</div><div class="value" id="statTraffic">—</div><div class="stat-card-scrollable"><div class="sub" id="statTrafficSub"></div></div></div>
+  </div>
+
+  <div class="section"><h2>Maintenance</h2></div>
+  <div class="stats">
+    <div class="stat-card" title="Endpoints ready for a periodic health check; actively blocked IPs are excluded"><div class="label">Checks Due</div><div class="value" id="statChecksDue">—</div><div class="sub" id="statChecksDueSub">healthy / retry ready</div></div>
+    <div class="stat-card" title="Quarantined endpoints waiting for their retry time or IP lock to expire"><div class="label">Waiting for Retry</div><div class="value" id="statWaiting">—</div><div class="sub" id="statWaitingSub">quarantined endpoints</div></div>
+    <div class="stat-card" title="Latest fetch state of configured proxy sources"><div class="label">Source Health</div><div class="value" id="statSourceHealth">—</div><div class="sub" id="statSourceHealthSub">errors / pending / total</div></div>
+    <div class="stat-card" title="Completed health checks since this process started; retries within a check are not counted separately"><div class="label">Health Checks</div><div class="value" id="statHealthChecks">—</div><div class="sub" id="statHealthChecksSub">success / failed since start</div></div>
   </div>
 
   <div class="section"><h2>Sources</h2></div>
@@ -183,6 +191,20 @@ tr:hover td{background:#ffffff06}
       '<span class="proc-badge proc-obscura">obscura: '+(proc.obscura||0)+'</span>';
 
     document.getElementById('statBlocked').textContent=stats.blocked_ips||0;
+
+    var m=stats.maintenance||{},checks=m.checks||{};
+    var healthyDue=m.healthy_due||0,retryReady=m.quarantined_ready||0;
+    document.getElementById('statChecksDue').textContent=healthyDue+retryReady;
+    document.getElementById('statChecksDueSub').textContent='healthy: '+healthyDue+' / retry ready: '+retryReady;
+    document.getElementById('statWaiting').textContent=m.quarantined_waiting||0;
+    document.getElementById('statWaitingSub').textContent='includes IP-locked endpoints';
+    var sourceTotal=m.source_total||0,sourceErrors=m.source_errors||0,sourcePending=m.source_pending||0;
+    document.getElementById('statSourceHealth').textContent=(sourceTotal-sourceErrors-sourcePending)+' / '+sourceTotal;
+    document.getElementById('statSourceHealthSub').textContent='errors: '+sourceErrors+' / pending: '+sourcePending;
+    var successes=(checks.routine_success||0)+(checks.candidate_success||0);
+    var failures=(checks.routine_failure||0)+(checks.candidate_failure||0);
+    document.getElementById('statHealthChecks').textContent=successes+' / '+failures;
+    document.getElementById('statHealthChecksSub').textContent='periodic: '+(checks.routine_success||0)+' / '+(checks.routine_failure||0)+'; new: '+(checks.candidate_success||0)+' / '+(checks.candidate_failure||0)+' (since start)';
 
     var rs=stats.request_stats||{};
     var rsTotal=rs.total||{};

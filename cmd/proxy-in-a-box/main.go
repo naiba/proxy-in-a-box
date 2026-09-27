@@ -217,12 +217,16 @@ var rootCmd = &cobra.Command{
 			}
 			var blockedIPCount int64
 			proxyinabox.DB.Model(&proxyinabox.BlockedIP{}).Where("locked_until > ?", time.Now()).Count(&blockedIPCount)
-			var quarantinedCount int64
-			proxyinabox.DB.Model(&proxyinabox.Proxy{}).Where("available = ?", false).Count(&quarantinedCount)
+			maintenance, err := maintenanceSummary(&service.ProxyService{DB: proxyinabox.DB}, crawler.GetSourceStatuses())
+			if err != nil {
+				http.Error(w, "failed to load maintenance stats", http.StatusInternalServerError)
+				return
+			}
 			stats := map[string]interface{}{
 				"version":     version,
 				"total":       len(proxies),
-				"quarantined": quarantinedCount,
+				"quarantined": maintenance.QuarantinedReady + maintenance.QuarantinedWaiting,
+				"maintenance": maintenance,
 				"by_protocol": byProtocol,
 				"by_source":   bySource,
 				"blocked_ips": blockedIPCount,
@@ -315,6 +319,34 @@ func main() {
 
 func skipIfStillRunning(job func()) cron.Job {
 	return cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(job))
+}
+
+type maintenanceSnapshot struct {
+	service.MaintenanceStats
+	SourceTotal   int                       `json:"source_total"`
+	SourceErrors  int                       `json:"source_errors"`
+	SourcePending int                       `json:"source_pending"`
+	Checks        crawler.VerificationStats `json:"checks"`
+}
+
+func maintenanceSummary(ps *service.ProxyService, sources []crawler.SourceStatus) (maintenanceSnapshot, error) {
+	counts, err := ps.GetMaintenanceStats()
+	if err != nil {
+		return maintenanceSnapshot{}, err
+	}
+	snapshot := maintenanceSnapshot{
+		MaintenanceStats: counts,
+		SourceTotal:      len(sources),
+		Checks:           crawler.GetVerificationStats(),
+	}
+	for _, src := range sources {
+		if src.LastFetch.IsZero() {
+			snapshot.SourcePending++
+		} else if src.Error != "" {
+			snapshot.SourceErrors++
+		}
+	}
+	return snapshot, nil
 }
 
 func newMITM() *mitm.MITM {
