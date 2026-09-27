@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -143,6 +144,47 @@ func TestHealthResponseBodyLimit(t *testing.T) {
 	}
 	if len(body) != 32 {
 		t.Fatalf("body length = %d, want 32", len(body))
+	}
+}
+
+func TestHealthCheckClosesStalledProxyHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	closed := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			closed <- err
+			return
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := io.ReadFull(conn, make([]byte, 3)); err != nil {
+			closed <- err
+			return
+		}
+		// A proxy that never replies to the SOCKS greeting must not keep the
+		// verification dial alive after the request timeout.
+		_, err = conn.Read(make([]byte, 1))
+		closed <- err
+	}()
+
+	_, err = getURLThroughProxyWithRetryLimit("http://example.com", 200*time.Millisecond,
+		"socks5://"+listener.Addr().String(), 1, 0)
+	if err == nil {
+		t.Fatal("stalled proxy handshake unexpectedly succeeded")
+	}
+	select {
+	case err := <-closed:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("proxy connection was not closed after timeout: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proxy connection remained open after request timeout")
 	}
 }
 

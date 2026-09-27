@@ -275,7 +275,10 @@ func getURLThroughProxyWithRetryLimit(
 		if err != nil {
 			return nil, err
 		}
-		dialer, err := xproxy.FromURL(proxyUrl, xproxy.Direct)
+		// Client.Timeout cannot interrupt a custom Dialer that is blocked in a
+		// proxy protocol handshake. Bound the underlying connection and handshake
+		// so failed candidates do not leave dial goroutines and sockets behind.
+		dialer, err := xproxy.FromURL(proxyUrl, deadlineDialer{timeout: timeout})
 		if err != nil {
 			return nil, err
 		}

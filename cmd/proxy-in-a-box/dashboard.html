@@ -117,7 +117,7 @@ tr:hover td{background:#ffffff06}
     <div class="stat-card status-gray" id="cardChecksDue" title="Endpoints ready for a periodic health check; actively blocked IPs are excluded"><div class="label">Checks Due <span class="status-pill" id="statusChecksDue">Collecting</span></div><div class="value" id="statChecksDue">—</div><div class="sub" id="statChecksDueSub">healthy / retry ready</div></div>
     <div class="stat-card status-neutral" id="cardWaiting" title="Quarantined endpoints waiting for their retry time or IP lock to expire"><div class="label">Waiting for Retry <span class="status-pill" id="statusWaiting">Expected</span></div><div class="value" id="statWaiting">—</div><div class="sub" id="statWaitingSub">quarantined endpoints</div></div>
     <div class="stat-card status-gray" id="cardSourceHealth" title="Latest fetch state of configured proxy sources"><div class="label">Source Health <span class="status-pill" id="statusSourceHealth">Collecting</span></div><div class="value" id="statSourceHealth">—</div><div class="sub" id="statSourceHealthSub">errors / pending / total</div></div>
-    <div class="stat-card status-gray" id="cardHealthChecks" title="Periodic health-check rate in the last 60 minutes; candidate checks are shown separately"><div class="label">Routine Checks <span class="status-pill" id="statusHealthChecks">Collecting</span></div><div class="value" id="statHealthChecks">—</div><div class="sub" id="statHealthChecksSub">success / failed in 60m</div></div>
+    <div class="stat-card status-gray" id="cardHealthChecks" title="Periodic health-check outcomes in the last 60 minutes; candidate checks are shown separately"><div class="label">Routine Checks <span class="status-pill" id="statusHealthChecks">Collecting</span></div><div class="value" id="statHealthChecks">—</div><div class="sub">success / failed (last 60m)</div><div class="sub" id="statHealthChecksSub">source candidates: —</div></div>
   </div>
 
   <div class="section"><h2>Sources</h2></div>
@@ -217,7 +217,7 @@ tr:hover td{background:#ffffff06}
     document.getElementById('statSourceHealth').textContent=(sourceTotal-sourceErrors-sourcePending)+' / '+sourceTotal;
     document.getElementById('statSourceHealthSub').textContent='errors: '+sourceErrors+' / pending: '+sourcePending;
     document.getElementById('statHealthChecks').textContent=(checks.routine_success||0)+' / '+(checks.routine_failure||0);
-    document.getElementById('statHealthChecksSub').textContent='source candidates: '+(checks.candidate_success||0)+' / '+(checks.candidate_failure||0)+' (last 60m)';
+    document.getElementById('statHealthChecksSub').textContent='source candidates: '+(checks.candidate_success||0)+' success / '+(checks.candidate_failure||0)+' failed (last 60m)';
     paintStatus('cardChecksDue','statusChecksDue',levels.due);
     paintStatus('cardWaiting','statusWaiting',levels.waiting);
     paintStatus('cardSourceHealth','statusSourceHealth',levels.sources);
