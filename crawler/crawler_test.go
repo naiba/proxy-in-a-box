@@ -147,6 +147,91 @@ func TestHealthResponseBodyLimit(t *testing.T) {
 	}
 }
 
+func TestSourceFetchUsesBoundedDirectRequest(t *testing.T) {
+	previous := proxyinabox.Config.SourceFetch
+	proxyinabox.Config.SourceFetch.Retries = 1
+	proxyinabox.Config.SourceFetch.Timeout = time.Second
+	proxyinabox.Config.SourceFetch.ResponseBodyLimit = 16
+	proxyinabox.Config.SourceFetch.ProxyFallback = false
+	t.Cleanup(func() { proxyinabox.Config.SourceFetch = previous })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 17)))
+	}))
+	defer server.Close()
+
+	_, err := GetDocFromURL(server.URL)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 16 bytes") {
+		t.Fatalf("source fetch error = %v, want response-size error", err)
+	}
+}
+
+func TestSourceFetchDoesNotUseProxyWhenDirectSucceeds(t *testing.T) {
+	previousConfig := proxyinabox.Config.SourceFetch
+	previousCache := proxyinabox.CI
+	proxyinabox.Config.SourceFetch.Retries = 1
+	proxyinabox.Config.SourceFetch.Timeout = time.Second
+	proxyinabox.Config.SourceFetch.ResponseBodyLimit = 1024
+	proxyinabox.Config.SourceFetch.ProxyFallback = true
+	proxyHit := make(chan struct{}, 1)
+	proxyinabox.CI = &testCache{randomProxy: "http://127.0.0.1:1", randomProxyHit: proxyHit}
+	t.Cleanup(func() {
+		proxyinabox.Config.SourceFetch = previousConfig
+		proxyinabox.CI = previousCache
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	body, err := GetDocFromURL(server.URL)
+	if err != nil || body != "ok" {
+		t.Fatalf("direct source fetch = %q, %v", body, err)
+	}
+	select {
+	case <-proxyHit:
+		t.Fatal("successful direct source fetch unexpectedly selected a proxy")
+	default:
+	}
+}
+
+func TestConfiguredVerificationWorkersHasSafeBounds(t *testing.T) {
+	previous := proxyinabox.Config.Sys.ProxyVerifyWorker
+	t.Cleanup(func() { proxyinabox.Config.Sys.ProxyVerifyWorker = previous })
+
+	proxyinabox.Config.Sys.ProxyVerifyWorker = 0
+	if got := configuredVerificationWorkers(); got != defaultProxyVerificationWorkers {
+		t.Fatalf("default workers = %d, want %d", got, defaultProxyVerificationWorkers)
+	}
+	proxyinabox.Config.Sys.ProxyVerifyWorker = maxProxyVerificationWorkers + 1
+	if got := configuredVerificationWorkers(); got != maxProxyVerificationWorkers {
+		t.Fatalf("capped workers = %d, want %d", got, maxProxyVerificationWorkers)
+	}
+}
+
+func TestValidationSlotsBoundCombinedConcurrency(t *testing.T) {
+	previous := validationSlots
+	validationSlots = make(chan struct{}, 1)
+	t.Cleanup(func() { validationSlots = previous })
+
+	first := acquireValidationSlot()
+	acquired := make(chan chan struct{}, 1)
+	go func() { acquired <- acquireValidationSlot() }()
+	select {
+	case <-acquired:
+		t.Fatal("second validation acquired a full shared slot pool")
+	case <-time.After(25 * time.Millisecond):
+	}
+	releaseValidationSlot(first)
+	select {
+	case second := <-acquired:
+		releaseValidationSlot(second)
+	case <-time.After(time.Second):
+		t.Fatal("second validation did not acquire the released slot")
+	}
+}
+
 func TestHealthCheckClosesStalledProxyHandshake(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

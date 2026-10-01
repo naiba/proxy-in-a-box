@@ -144,12 +144,17 @@ func classifyMaintenance(m maintenanceSnapshot, available int64) maintenanceLeve
 	}
 	routineTotal := m.RecentChecks.RoutineSuccess + m.RecentChecks.RoutineFailure
 	if routineTotal >= 10 {
-		// Integer comparisons avoid rounding small samples up to a false green.
+		// Public proxies naturally churn at a high rate. A high failure ratio by
+		// itself is therefore informational, not a service-critical condition.
+		// Escalate only when no check succeeds or failures coincide with a large,
+		// sustained backlog that the workers cannot drain.
 		switch {
-		case m.RecentChecks.RoutineFailure*2 > routineTotal:
+		case m.RecentChecks.RoutineSuccess == 0:
 			levels.Checks = "red"
-		case m.RecentChecks.RoutineFailure*5 > routineTotal:
-			levels.Checks = "yellow"
+		case levels.Due == "red" && m.RecentChecks.RoutineFailure*2 > routineTotal:
+			levels.Checks = "red"
+		case m.RecentChecks.RoutineFailure*2 > routineTotal:
+			levels.Checks = "neutral"
 		default:
 			levels.Checks = "green"
 		}

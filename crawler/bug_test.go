@@ -10,15 +10,25 @@ import (
 )
 
 type testCache struct {
-	hasProxy     bool
-	locked       bool
-	hasProxyHit  chan struct{}
-	lockedHit    chan struct{}
-	hasProxyOnce sync.Once
-	lockedOnce   sync.Once
+	hasProxy       bool
+	locked         bool
+	hasProxyHit    chan struct{}
+	lockedHit      chan struct{}
+	randomProxyHit chan struct{}
+	randomProxy    string
+	hasProxyOnce   sync.Once
+	lockedOnce     sync.Once
 }
 
-func (c *testCache) RandomProxy() (string, bool)                                 { return "", false }
+func (c *testCache) RandomProxy() (string, bool) {
+	if c.randomProxyHit != nil {
+		select {
+		case c.randomProxyHit <- struct{}{}:
+		default:
+		}
+	}
+	return c.randomProxy, c.randomProxy != ""
+}
 func (c *testCache) GetProxy() (string, bool)                                    { return "", false }
 func (c *testCache) ProxyLength() int                                            { return 0 }
 func (c *testCache) PickProxy(*http.Request) (string, error)                     { return "", nil }

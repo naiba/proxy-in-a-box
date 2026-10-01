@@ -233,6 +233,8 @@ var rootCmd = &cobra.Command{
 				"by_source":   bySource,
 				"blocked_ips": blockedIPCount,
 				"processes":   mitm.GetProcessCounts(),
+				"runtime":     runtimeSampler.snapshot(),
+				"crawler":     crawler.GetRuntimeStats(),
 				"request_stats": map[string]interface{}{
 					"total":       mitm.GlobalRequestStats.Snapshot(),
 					"by_upstream": mitm.GlobalUpstreamStats.Snapshot(),

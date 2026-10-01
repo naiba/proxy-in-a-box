@@ -231,9 +231,8 @@ func fetchJSONSource(src Source) ([]proxyinabox.Proxy, error) {
 // Handles "ip:port EXTRA" text formats by splitting on space first.
 // 同时支持 "protocol://ip:port" 格式（如 trio666 源），自动提取协议并剥离前缀
 func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
-	var proxies []proxyinabox.Proxy
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
+	proxies := make([]proxyinabox.Proxy, 0, strings.Count(body, "\n")+1)
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -281,7 +280,7 @@ func parseJSONResponse(body string, src Source) []proxyinabox.Proxy {
 		count = len(portValues)
 	}
 
-	var proxies []proxyinabox.Proxy
+	proxies := make([]proxyinabox.Proxy, 0, count)
 	for i := 0; i < count; i++ {
 		ip := toString(ipValues[i])
 		port := toString(portValues[i])

@@ -105,11 +105,13 @@ tr:hover td{background:#ffffff06}
   <div class="stats" id="statsRow">
     <div class="stat-card"><div class="label">Total Proxies</div><div class="value" id="statTotal">—</div></div>
     <div class="stat-card"><div class="label">Protocols</div><div class="value" id="statProtoCount">—</div><div class="stat-card-scrollable"><div class="protocol-badges" id="protoBadges"></div></div></div>
-    <div class="stat-card"><div class="label">Sources</div><div class="value" id="statSources">—</div><div class="stat-card-scrollable"><div class="sub" id="statSourcesSub"></div></div></div>
-    <div class="stat-card"><div class="label">Processes</div><div class="value" id="statProcesses">—</div><div class="stat-card-scrollable"><div class="process-badges" id="processBadges"></div></div></div>
+    <div class="stat-card" title="Configured sources that currently contribute at least one available proxy"><div class="label">Active Sources</div><div class="value" id="statSources">—</div><div class="stat-card-scrollable"><div class="sub" id="statSourcesSub"></div></div></div>
+    <div class="stat-card" title="On-demand Obscura browser helpers, not Go validation workers"><div class="label">Browser Helpers</div><div class="value" id="statProcesses">—</div><div class="stat-card-scrollable"><div class="process-badges" id="processBadges"></div></div></div>
     <div class="stat-card"><div class="label">Blocked IPs</div><div class="value" id="statBlocked">—</div><div class="stat-card-scrollable"><div class="sub" id="statBlockedSub">locked for 6 hours</div></div></div>
     <div class="stat-card"><div class="label">Requests</div><div class="value" id="statRequests">—</div><div class="stat-card-scrollable"><div class="sub" id="statRequestsSub"></div></div></div>
     <div class="stat-card"><div class="label">Traffic</div><div class="value" id="statTraffic">—</div><div class="stat-card-scrollable"><div class="sub" id="statTrafficSub"></div></div></div>
+    <div class="stat-card"><div class="label">Runtime</div><div class="value" id="statRuntime">—</div><div class="stat-card-scrollable"><div class="sub" id="statRuntimeSub">CPU / memory / goroutines</div></div></div>
+    <div class="stat-card"><div class="label">Validation Load</div><div class="value" id="statValidation">—</div><div class="stat-card-scrollable"><div class="sub" id="statValidationSub">active workers / queues / crawler traffic</div></div></div>
   </div>
 
   <div class="section"><h2>Maintenance</h2></div>
@@ -145,7 +147,7 @@ tr:hover td{background:#ffffff06}
 
 <script>
 (function(){
-  var sortCol='delay',sortAsc=true,proxiesData=[],countdown=30;
+  var sortCol='delay',sortAsc=true,proxiesData=[],countdown=30,lastCrawler=null,lastCrawlerAt=0;
   var sourceSortCol='name',sourceSortAsc=true,sourcesData=[];
 
   function relTime(ts){
@@ -222,6 +224,7 @@ tr:hover td{background:#ffffff06}
     paintStatus('cardWaiting','statusWaiting',levels.waiting);
     paintStatus('cardSourceHealth','statusSourceHealth',levels.sources);
     paintStatus('cardHealthChecks','statusHealthChecks',levels.checks);
+    if(levels.checks==='neutral')document.getElementById('statusHealthChecks').textContent='High churn';
 
     var rs=stats.request_stats||{};
     var rsTotal=rs.total||{};
@@ -246,6 +249,33 @@ tr:hover td{background:#ffffff06}
     }
     document.getElementById('statTrafficSub').innerHTML=
       traffBadges?'<div class="protocol-badges" style="margin-top:2px">'+traffBadges+'</div>':'';
+
+    var rt=stats.runtime||{};
+    document.getElementById('statRuntime').textContent=(Number(rt.cpu_percent)||0).toFixed(1)+'% CPU';
+    document.getElementById('statRuntimeSub').textContent=
+      'RSS: '+formatBytes(rt.rss_bytes||0)+' / heap: '+formatBytes(rt.heap_alloc_bytes||0)+
+      '; goroutines: '+(rt.goroutines||0)+' / FDs: '+(rt.open_fds==null?'—':rt.open_fds);
+
+    var cr=stats.crawler||{},active=(cr.candidate_active||0)+(cr.routine_active||0);
+    var workers=cr.max_concurrent||0;
+    var nowMs=Date.now(),crawlerRate='attempts since start: '+(cr.network_attempts||0);
+    if(lastCrawler&&lastCrawlerAt&&cr.network_attempts>=lastCrawler.network_attempts){
+      var elapsed=(nowMs-lastCrawlerAt)/1000;
+      if(elapsed>0){
+        crawlerRate='network: '+((cr.network_attempts-lastCrawler.network_attempts)/elapsed).toFixed(2)+'/s, '+
+          formatBytes((cr.network_response_bytes-lastCrawler.network_response_bytes)/elapsed)+'/s';
+      }
+    }
+    lastCrawler={network_attempts:cr.network_attempts||0,network_response_bytes:cr.network_response_bytes||0};lastCrawlerAt=nowMs;
+    var failures=cr.failures||{},skipped=cr.skipped||{};
+    document.getElementById('statValidation').textContent=active+' / '+workers;
+    document.getElementById('statValidationSub').innerHTML=
+      'candidate queue: '+(cr.candidate_queue||0)+'/'+(cr.candidate_queue_capacity||0)+
+      '; routine queue: '+(cr.routine_queue||0)+'/'+(cr.routine_queue_capacity||0)+
+      '; slot wait: '+((cr.candidate_waiting_for_slot||0)+(cr.routine_waiting_for_slot||0))+
+      '<br>'+crawlerRate+
+      '<br>failures — timeout: '+(failures.timeout||0)+', network: '+(failures.network||0)+', response: '+(failures.response||0)+', IP mismatch: '+(failures.ip_mismatch||0)+', TLS: '+(failures.tls_probe||0)+
+      '<br>skipped — duplicate: '+(skipped.duplicate||0)+', locked: '+(skipped.ip_locked||0)+', available: '+(skipped.already_available||0)+', backoff: '+(skipped.backoff||0);
     if(stats.version)document.getElementById('versionFooter').textContent='Proxy-in-a-Box '+stats.version;
   }
 

@@ -54,6 +54,29 @@ func TestBuildObscuraServeArgsDefaults(t *testing.T) {
 	}
 }
 
+func TestNonBrowserScriptDoesNotReleaseAnotherBrowserSession(t *testing.T) {
+	sentinel := &BrowserSession{}
+	activeSessionMu.Lock()
+	previous := activeSession
+	activeSession = sentinel
+	activeSessionMu.Unlock()
+	t.Cleanup(func() {
+		activeSessionMu.Lock()
+		activeSession = previous
+		activeSessionMu.Unlock()
+	})
+
+	if _, err := runScript(Source{Name: "plain", Type: "script", Script: `return {}`}); err != nil {
+		t.Fatalf("run plain script: %v", err)
+	}
+	activeSessionMu.Lock()
+	got := activeSession
+	activeSessionMu.Unlock()
+	if got != sentinel {
+		t.Fatal("plain script released a browser session it did not own")
+	}
+}
+
 func TestBuildObscuraServeArgsProxy(t *testing.T) {
 	proxyAddr := "http://127.0.0.1:8080"
 	args := buildObscuraServeArgs(9333, proxyAddr)

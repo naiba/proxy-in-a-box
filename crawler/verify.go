@@ -12,8 +12,38 @@ import (
 var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
 var pendingVerify sync.Map
+var validationSlots chan struct{}
 
-const staleProxyThreshold = 6 * 30 * 24 * time.Hour
+const (
+	staleProxyThreshold             = 6 * 30 * 24 * time.Hour
+	defaultProxyVerificationWorkers = 20
+	maxProxyVerificationWorkers     = 256
+)
+
+func configuredVerificationWorkers() int {
+	workers := proxyinabox.Config.Sys.ProxyVerifyWorker
+	if workers <= 0 {
+		return defaultProxyVerificationWorkers
+	}
+	if workers > maxProxyVerificationWorkers {
+		return maxProxyVerificationWorkers
+	}
+	return workers
+}
+
+func acquireValidationSlot() chan struct{} {
+	slots := validationSlots
+	if slots != nil {
+		slots <- struct{}{}
+	}
+	return slots
+}
+
+func releaseValidationSlot(slots chan struct{}) {
+	if slots != nil {
+		<-slots
+	}
+}
 
 func Init() {
 	// BUG-FIX: test-source 子命令不初始化 CI（缓存实例），跳过依赖 CI 的操作避免 nil panic
@@ -21,14 +51,16 @@ func Init() {
 		proxyinabox.CI.LoadLockedIPs()
 	}
 
-	ValidateJobs = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker*2)
-	for i := 1; i <= proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
+	workers := configuredVerificationWorkers()
+	validationSlots = make(chan struct{}, workers)
+	ValidateJobs = make(chan proxyinabox.Proxy, workers*2)
+	for i := 1; i <= workers; i++ {
 		go validator(i, ValidateJobs)
 	}
 
 	proxyServiceInstance = &service.ProxyService{DB: proxyinabox.DB}
-	verifyJob = make(chan proxyinabox.Proxy, proxyinabox.Config.Sys.ProxyVerifyWorker)
-	for i := 0; i < proxyinabox.Config.Sys.ProxyVerifyWorker; i++ {
+	verifyJob = make(chan proxyinabox.Proxy, workers)
+	for i := 0; i < workers; i++ {
 		go getDelay(verifyJob)
 	}
 }
@@ -42,6 +74,7 @@ func Verify() {
 	for _, p := range list {
 		uri := p.URI()
 		if _, loaded := pendingVerify.LoadOrStore(uri, nil); loaded {
+			runtimeMetrics.skipDuplicate.Add(1)
 			continue
 		}
 		stillUnverified, err := proxyServiceInstance.IsUnVerified(p)
@@ -72,11 +105,18 @@ func getDelay(pc chan proxyinabox.Proxy) {
 			defer pendingVerify.Delete(proxy)
 
 			if proxyinabox.CI.IsIPLocked(p.IP) {
+				runtimeMetrics.skipIPLocked.Add(1)
 				return
 			}
 
+			runtimeMetrics.routineWaiting.Add(1)
+			slots := acquireValidationSlot()
+			runtimeMetrics.routineWaiting.Add(-1)
+			defer releaseValidationSlot(slots)
+			runtimeMetrics.routineActive.Add(1)
+			defer runtimeMetrics.routineActive.Add(-1)
 			start := time.Now().Unix()
-			body, err := getURLThroughProxyWithRetryLimit(
+			body, requestErr := getURLThroughProxyWithRetryLimit(
 				verifyEndpoint,
 				time.Second*5,
 				proxy,
@@ -84,17 +124,30 @@ func getDelay(pc chan proxyinabox.Proxy) {
 				configuredHealthResponseBodyLimit(),
 			)
 			var trace cloudflareTraceResult
-			if err == nil {
-				trace, err = parseCloudflareTrace(body)
+			var parseErr error
+			if requestErr == nil {
+				trace, parseErr = parseCloudflareTrace(body)
 			}
 			delay := time.Now().Unix() - start
-			if err != nil || trace.IP != p.IP {
+			if requestErr != nil {
+				recordNetworkFailure(requestErr)
+				recordHealthCheckFailure(p)
+				return
+			}
+			if parseErr != nil {
+				runtimeMetrics.failResponse.Add(1)
+				recordHealthCheckFailure(p)
+				return
+			}
+			if trace.IP != p.IP {
+				runtimeMetrics.failIPMismatch.Add(1)
 				recordHealthCheckFailure(p)
 				return
 			}
 			deepVerified := needsDeepCheck(p, time.Now())
 			if deepVerified {
 				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
+					runtimeMetrics.failTLSProbe.Add(1)
 					fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)
 					recordHealthCheckFailure(p)
 					return

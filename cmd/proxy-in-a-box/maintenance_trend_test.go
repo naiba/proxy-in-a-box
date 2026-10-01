@@ -47,7 +47,7 @@ func TestClassifyMaintenanceSeparatesNormalAndAbnormalStates(t *testing.T) {
 	m.RecentChecks.RoutineSuccess = 7
 	m.RecentChecks.RoutineFailure = 3
 	got = classifyMaintenance(m, 100)
-	if got.Waiting != "yellow" || got.Checks != "yellow" {
+	if got.Waiting != "yellow" || got.Checks != "green" {
 		t.Fatalf("rising retry queue and moderate routine failures = %+v", got)
 	}
 
@@ -81,5 +81,17 @@ func TestClassifyMaintenanceSeparatesNormalAndAbnormalStates(t *testing.T) {
 	m.Trend.DueGrowing = true
 	if got := classifyMaintenance(m, 100); got.Due != "green" {
 		t.Fatalf("new backlog without sustained prior backlog should not be red: %+v", got)
+	}
+}
+
+func TestClassifyMaintenanceTreatsPublicProxyChurnAsInformational(t *testing.T) {
+	m := maintenanceSnapshot{
+		MaintenanceStats: service.MaintenanceStats{HealthyDue: 2},
+		Trend:            backlogTrend{Ready: true},
+		SourceTotal:      16,
+		RecentChecks:     crawler.VerificationStats{RoutineSuccess: 239, RoutineFailure: 2559},
+	}
+	if got := classifyMaintenance(m, 565); got.Checks != "neutral" {
+		t.Fatalf("high churn without backlog = %q, want neutral", got.Checks)
 	}
 }

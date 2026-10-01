@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	lua "github.com/yuin/gopher-lua"
@@ -12,14 +13,33 @@ import (
 	"github.com/naiba/proxyinabox"
 )
 
+// Obscura is intentionally limited to one script at a time. A browser process
+// is comparatively expensive, and the compatibility BrowserFetch API owns a
+// process-wide session. Serializing browser-backed scripts prevents one source
+// from navigating or closing another source's page while keeping ordinary Lua
+// sources concurrent.
+var browserScriptMu sync.Mutex
+
 // runScript executes a Lua script from a Source using gopher-lua.
 // Injects fetch(url, headers?), sleep(ms), json_decode(str), json_encode(table).
 // Script must return a table of {ip, port, protocol}.
 // 脚本执行有 300 秒超时限制，browser 操作较慢需要更长时间。
 func runScript(src Source) ([]proxyinabox.Proxy, error) {
+	ownsBrowser := false
+	acquireBrowser := func() {
+		if !ownsBrowser {
+			browserScriptMu.Lock()
+			ownsBrowser = true
+		}
+	}
+	defer func() {
+		if ownsBrowser {
+			ReleaseBrowser()
+			browserScriptMu.Unlock()
+		}
+	}()
 	L := lua.NewState()
 	defer L.Close()
-	defer ReleaseBrowser()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
@@ -90,6 +110,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 	// Returns rendered HTML string or nil on error
 	// 使用无头浏览器获取 JS 渲染后的 HTML，比 fetch 慢但能处理 JS 渲染的页面
 	L.SetGlobal("browser_fetch", L.NewFunction(func(L *lua.LState) int {
+		acquireBrowser()
 		fetchURL := L.CheckString(1)
 		html, err := BrowserFetch(fetchURL)
 		if err != nil {
@@ -104,6 +125,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 	// inject browser_eval(expression) — evaluates JS in current browser page
 	// 必须先通过 browser_fetch 导航到页面，再用 browser_eval 执行 JS 表达式
 	L.SetGlobal("browser_eval", L.NewFunction(func(L *lua.LState) int {
+		acquireBrowser()
 		expression := L.CheckString(1)
 		result, err := BrowserEval(expression)
 		if err != nil {
@@ -126,7 +148,7 @@ func runScript(src Source) ([]proxyinabox.Proxy, error) {
 		return nil, fmt.Errorf("script result for %s is not a table", src.Name)
 	}
 
-	var proxies []proxyinabox.Proxy
+	proxies := make([]proxyinabox.Proxy, 0, retTbl.MaxN())
 	retTbl.ForEach(func(_, item lua.LValue) {
 		sub, ok := item.(*lua.LTable)
 		if !ok {

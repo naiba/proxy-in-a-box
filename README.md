@@ -83,14 +83,14 @@ Management Dashboard & API:
 GET /             — Web dashboard (pool, verification backlog, quarantined retries, source status)
 GET /stat         — Pool statistics (plain text)
 GET /get          — Get one available proxy
-GET /api/stats    — Pool statistics (JSON: available/quarantined totals, by protocol/source, blocked IPs, request stats, maintenance)
+GET /api/stats    — Pool statistics (JSON: available/quarantined totals, request/maintenance stats, process runtime and crawler load)
 GET /api/proxies  — Full proxy list (JSON)
 GET /api/sources  — Source fetch statuses (JSON)
 ```
 
 `maintenance` reports healthy proxies due for checking, quarantined proxies ready for retry or still waiting (including IP locks), source errors and pending first fetches, and periodic/source-candidate check outcomes since process start. Check totals count checks, not individual HTTP retries, and reset on restart.
 
-Dashboard colors use a separate rolling 60-minute check count and 10-minute backlog trend sampled every 5 minutes: green is healthy, yellow means sustained backlog or partial source errors, red means significant growth or widespread failures, and gray means insufficient data. Periodic checks need at least 10 samples before applying failure-rate thresholds (green at 20% or less, red above 50%); source-candidate checks are shown separately. Quarantined endpoints waiting for retry are expected and stay neutral unless the waiting count grows substantially. Recent counts and trends reset on restart.
+Dashboard colors use a separate rolling 60-minute check count and 10-minute backlog trend sampled every 5 minutes. High routine failure is shown as expected churn while the queue is draining; it becomes critical only when no checks succeed or it coincides with a large sustained backlog. Source-candidate checks are shown separately. Quarantined endpoints waiting for retry are expected and stay neutral unless the waiting count grows substantially. Runtime cards expose CPU, RSS/heap, goroutines, file descriptors, worker activity, real in-memory queues, crawler attempts, and response bytes. Recent counts and trends reset on restart.
 Checks due turn yellow after ten minutes without a decline, and red when still growing above `max(20, 20% of available proxies)`. Waiting retries turn yellow only after consecutive growth, at least a doubling, and `max(10, 10% of available proxies)`; larger threefold growth can turn red. Source errors turn red when at least half of the sources are failing.
 
 ## Configuration
@@ -102,7 +102,7 @@ debug: true
 
 sys:
   name: MyProxy
-  proxy_verify_worker: 20    # concurrent verification workers
+  proxy_verify_worker: 20    # shared network-concurrency limit for candidate and routine checks (default 20, max 256)
 
 # HTTPS MITM decryption (default: false)
 # When enabled, the proxy decrypts HTTPS traffic using a self-signed CA — clients must disable TLS verification or trust the CA.
@@ -124,6 +124,13 @@ verification:
   deep_check_interval: 24h     # additional TLS interception probe
   retries: 2                   # attempts per health-check round
   response_body_limit: 16384   # maximum health-check response bytes
+
+# Source downloads (all optional; direct by default so bad proxies cannot delay them)
+source_fetch:
+  proxy_fallback: false         # try one random proxy after direct access fails
+  retries: 2                    # direct attempts (maximum 5)
+  timeout: 20s                  # timeout per attempt
+  response_body_limit: 4194304  # source response-body limit (default 4 MiB)
 
 # Headless browser for JS-rendered pages (optional)
 # Requires Obscura v0.2.1+ with the stealth build feature — included in the Docker image

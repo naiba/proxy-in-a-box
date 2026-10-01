@@ -22,6 +22,12 @@ var pendingValidate sync.Map
 
 const tlsHijackProbeTimeout = 5 * time.Second
 
+const (
+	defaultSourceFetchRetries  = 2
+	defaultSourceFetchTimeout  = 20 * time.Second
+	defaultSourceResponseLimit = int64(4 * 1024 * 1024)
+)
+
 // deadlineDialer bounds both the connection to the proxy and its protocol
 // handshake, which runs inside x/net/proxy's Dial call.
 type deadlineDialer struct {
@@ -122,27 +128,55 @@ func probeTLSHandshake(conn net.Conn, serverName string, timeout time.Duration) 
 	return uconn.Handshake()
 }
 
-// GetDocFromURL fetches a URL body as string, optionally through a random proxy.
-// 优先通过代理池中的随机 proxy 抓取，若代理抓取失败则 fallback 到直连重试，确保源站可达性最大化。
+func configuredSourceFetchRetries() int {
+	retries := proxyinabox.Config.SourceFetch.Retries
+	if retries <= 0 {
+		return defaultSourceFetchRetries
+	}
+	if retries > 5 {
+		return 5
+	}
+	return retries
+}
+
+func configuredSourceFetchTimeout() time.Duration {
+	if proxyinabox.Config.SourceFetch.Timeout > 0 {
+		return proxyinabox.Config.SourceFetch.Timeout
+	}
+	return defaultSourceFetchTimeout
+}
+
+func configuredSourceResponseLimit() int64 {
+	if proxyinabox.Config.SourceFetch.ResponseBodyLimit > 0 {
+		return proxyinabox.Config.SourceFetch.ResponseBodyLimit
+	}
+	return defaultSourceResponseLimit
+}
+
+// GetDocFromURL fetches source documents directly with a bounded body. An
+// optional single proxy fallback is available for sources that cannot be
+// reached directly; a bad free proxy is never allowed to delay every source
+// refresh by several retries.
 func GetDocFromURL(url string, customHeaders ...http.Header) (string, error) {
-	var proxy string
-	if proxyinabox.CI != nil {
-		proxy, _ = proxyinabox.CI.RandomProxy()
+	timeout := configuredSourceFetchTimeout()
+	limit := configuredSourceResponseLimit()
+	body, err := getURLThroughProxyWithRetryLimit(url, timeout, "", configuredSourceFetchRetries(), limit, customHeaders...)
+	if err == nil {
+		return string(body), nil
 	}
-
-	if proxy != "" {
-		body, err := GetURLThroughProxyWithRetry(url, time.Second*20, proxy, 3, customHeaders...)
-		if err == nil {
-			return string(body), nil
-		}
-		if proxyinabox.Config.Debug {
-			fmt.Printf("[PIAB] fetch [⚠️] proxy fetch failed for %s, fallback to direct: %v\n", url, err)
-		}
-	}
-
-	body, err := GetURLThroughProxyWithRetry(url, time.Second*20, "", 3, customHeaders...)
-	if err != nil {
+	if !proxyinabox.Config.SourceFetch.ProxyFallback || proxyinabox.CI == nil {
 		return "", err
+	}
+	proxy, ok := proxyinabox.CI.RandomProxy()
+	if !ok || proxy == "" {
+		return "", err
+	}
+	if proxyinabox.Config.Debug {
+		fmt.Printf("[PIAB] fetch [⚠️] direct fetch failed for %s, trying one proxy: %v\n", url, err)
+	}
+	body, proxyErr := getURLThroughProxyWithRetryLimit(url, timeout, proxy, 1, limit, customHeaders...)
+	if proxyErr != nil {
+		return "", fmt.Errorf("direct fetch: %v; proxy fallback: %w", err, proxyErr)
 	}
 	return string(body), nil
 }
@@ -155,16 +189,19 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 		// BUG-FIX: 使用 LoadOrStore 原子操作，防止多个 validator 同时验证同一代理。
 		// 每个成功获取的所有权都必须在本次循环结束时释放，包括代理已在缓存中的路径。
 		if _, loaded := pendingValidate.LoadOrStore(proxy, nil); loaded {
+			runtimeMetrics.skipDuplicate.Add(1)
 			continue
 		}
 		func() {
 			defer pendingValidate.Delete(proxy)
 
 			if proxyinabox.CI.IsIPLocked(p.IP) {
+				runtimeMetrics.skipIPLocked.Add(1)
 				return
 			}
 
 			if proxyinabox.CI.HasProxy(proxy) {
+				runtimeMetrics.skipAvailable.Add(1)
 				candidateFailures.clear(proxy)
 				return
 			}
@@ -173,12 +210,19 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			// prevent a frequent source refresh from bypassing retry backoff.
 			if !proxyinabox.CI.IsProxyValidationDue(proxy) ||
 				!candidateFailures.isDue(proxy, time.Now()) {
+				runtimeMetrics.skipBackoff.Add(1)
 				return
 			}
 
+			runtimeMetrics.candidateWaiting.Add(1)
+			slots := acquireValidationSlot()
+			runtimeMetrics.candidateWaiting.Add(-1)
+			defer releaseValidationSlot(slots)
+			runtimeMetrics.candidateActive.Add(1)
+			defer runtimeMetrics.candidateActive.Add(-1)
 			start := time.Now().Unix()
 
-			body, err := getURLThroughProxyWithRetryLimit(
+			body, requestErr := getURLThroughProxyWithRetryLimit(
 				verifyEndpoint,
 				time.Second*7,
 				proxy,
@@ -186,12 +230,26 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 				configuredHealthResponseBodyLimit(),
 			)
 			var trace cloudflareTraceResult
-			if err == nil {
-				trace, err = parseCloudflareTrace(body)
+			var parseErr error
+			if requestErr == nil {
+				trace, parseErr = parseCloudflareTrace(body)
 			}
 
-			if err != nil || trace.IP != p.IP {
+			if requestErr != nil {
 				checkCounters.recordCandidate(false)
+				recordNetworkFailure(requestErr)
+				candidateFailures.recordFailure(proxy, 1, time.Now())
+				return
+			}
+			if parseErr != nil {
+				checkCounters.recordCandidate(false)
+				runtimeMetrics.failResponse.Add(1)
+				candidateFailures.recordFailure(proxy, 1, time.Now())
+				return
+			}
+			if trace.IP != p.IP {
+				checkCounters.recordCandidate(false)
+				runtimeMetrics.failIPMismatch.Add(1)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				return
 			}
@@ -200,6 +258,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			// integrity check before entering the live pool.
 			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
 				checkCounters.recordCandidate(false)
+				runtimeMetrics.failTLSProbe.Add(1)
 				fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				proxyinabox.CI.RecordFailure(p.IP)
@@ -219,6 +278,7 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 				}
 			} else {
 				checkCounters.recordCandidate(false)
+				runtimeMetrics.failPersistence.Add(1)
 				fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
 			}
 		}()
@@ -269,6 +329,7 @@ func getURLThroughProxyWithRetryLimit(
 	customHeaders ...http.Header,
 ) ([]byte, error) {
 	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
 
 	if proxyAddr != "" {
 		proxyUrl, err := url.Parse(proxyAddr)
@@ -337,6 +398,7 @@ func getURLThroughProxyWithRetryLimit(
 	}
 	var lastErr error
 	for i := 0; i < retry; i++ {
+		runtimeMetrics.networkAttempts.Add(1)
 		resp, err := httpClient.Do(request)
 		if err != nil {
 			lastErr = err
@@ -347,6 +409,7 @@ func getURLThroughProxyWithRetryLimit(
 			reader = io.LimitReader(resp.Body, responseBodyLimit+1)
 		}
 		body, err := io.ReadAll(reader)
+		runtimeMetrics.networkResponseBytes.Add(uint64(len(body)))
 		closeErr := resp.Body.Close()
 		if err != nil {
 			lastErr = err

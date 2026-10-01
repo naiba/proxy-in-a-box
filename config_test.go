@@ -24,6 +24,11 @@ verification:
   deep_check_interval: 36h
   retries: 4
   response_body_limit: 8192
+source_fetch:
+  proxy_fallback: true
+  retries: 3
+  timeout: 12s
+  response_body_limit: 1048576
 `)); err != nil {
 		t.Fatalf("read config: %v", err)
 	}
@@ -61,5 +66,11 @@ verification:
 	}
 	if config.Verification.ResponseBodyLimit != 8192 {
 		t.Errorf("verification response body limit = %d, want 8192", config.Verification.ResponseBodyLimit)
+	}
+	if !config.SourceFetch.ProxyFallback || config.SourceFetch.Retries != 3 {
+		t.Errorf("source fetch fallback/retries = %v/%d, want true/3", config.SourceFetch.ProxyFallback, config.SourceFetch.Retries)
+	}
+	if config.SourceFetch.Timeout != 12*time.Second || config.SourceFetch.ResponseBodyLimit != 1048576 {
+		t.Errorf("source fetch timeout/limit = %s/%d", config.SourceFetch.Timeout, config.SourceFetch.ResponseBodyLimit)
 	}
 }
