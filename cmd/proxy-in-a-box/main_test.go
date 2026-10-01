@@ -49,7 +49,7 @@ func TestMaintenanceSummary_SourceStateAndJSON(t *testing.T) {
 }
 
 func TestDashboardDisplaysMaintenanceStats(t *testing.T) {
-	for _, id := range []string{"statChecksDue", "statWaiting", "statSourceHealth", "statHealthChecks", "statusChecksDue", "statusWaiting", "statusSourceHealth", "statusHealthChecks", "statRuntime", "statValidation"} {
+	for _, id := range []string{"statChecksDue", "statWaiting", "statSourceHealth", "statHealthChecks", "statusChecksDue", "statusWaiting", "statusSourceHealth", "statusHealthChecks", "statRuntime", "statValidation", "statusValidation"} {
 		if !strings.Contains(dashboardHTML, `id="`+id+`"`) {
 			t.Errorf("dashboard missing %s", id)
 		}

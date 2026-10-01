@@ -38,7 +38,8 @@ type SourceStatus struct {
 	Error      string    `json:"error"`
 	Interval   string    `json:"interval"`
 	// AvailableCount 该源当前在代理池中验证通过的可用代理数（实时从缓存统计）
-	AvailableCount int `json:"available_count"`
+	AvailableCount int                  `json:"available_count"`
+	Candidate      SourceCandidateStats `json:"candidate"`
 }
 
 var (
@@ -53,6 +54,7 @@ func GetSourceStatuses() []SourceStatus {
 	copy := make([]SourceStatus, len(sourceStatuses))
 	for i, s := range sourceStatuses {
 		copy[i] = s
+		copy[i].Candidate = sourceCandidateSnapshot(s.Name)
 	}
 	return copy
 }
@@ -194,9 +196,7 @@ func fetchSource(src Source, statusIndex int) {
 		} else {
 			fmt.Printf("[PIAB] %s [✅] fetched %d proxies\n", src.Name, len(proxies))
 			updateSourceStatus(statusIndex, len(proxies), nil)
-			for _, p := range proxies {
-				ValidateJobs <- p
-			}
+			enqueueSourceCandidates(src.Name, proxies)
 		}
 
 		time.Sleep(interval)

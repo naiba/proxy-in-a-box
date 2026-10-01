@@ -13,11 +13,15 @@ var verifyJob chan proxyinabox.Proxy
 var proxyServiceInstance proxyinabox.ProxyService
 var pendingVerify sync.Map
 var validationSlots chan struct{}
+var candidateSlots chan struct{}
+var validationAttemptLimiter *attemptRateLimiter
 
 const (
-	staleProxyThreshold             = 6 * 30 * 24 * time.Hour
-	defaultProxyVerificationWorkers = 20
-	maxProxyVerificationWorkers     = 256
+	staleProxyThreshold                = 6 * 30 * 24 * time.Hour
+	defaultProxyVerificationWorkers    = 20
+	maxProxyVerificationWorkers        = 256
+	defaultValidationAttemptsPerSecond = 50
+	maxValidationAttemptsPerSecond     = 1000
 )
 
 func configuredVerificationWorkers() int {
@@ -29,6 +33,36 @@ func configuredVerificationWorkers() int {
 		return maxProxyVerificationWorkers
 	}
 	return workers
+}
+
+func configuredValidationRate() (int, int) {
+	rate := proxyinabox.Config.Verification.MaxAttemptsPerSecond
+	if rate <= 0 {
+		rate = defaultValidationAttemptsPerSecond
+	} else if rate > maxValidationAttemptsPerSecond {
+		rate = maxValidationAttemptsPerSecond
+	}
+	burst := proxyinabox.Config.Verification.AttemptBurst
+	if burst <= 0 {
+		burst = min(rate, defaultProxyVerificationWorkers)
+	} else if burst > rate {
+		burst = rate
+	}
+	return rate, burst
+}
+
+func configuredRoutineReservedWorkers(workers int) int {
+	if workers <= 1 {
+		return 0
+	}
+	reserved := proxyinabox.Config.Verification.RoutineReservedWorkers
+	if reserved <= 0 {
+		reserved = max(1, workers/5)
+	}
+	if reserved >= workers {
+		return workers - 1
+	}
+	return reserved
 }
 
 func acquireValidationSlot() chan struct{} {
@@ -45,6 +79,20 @@ func releaseValidationSlot(slots chan struct{}) {
 	}
 }
 
+func acquireCandidateSlot() chan struct{} {
+	slots := candidateSlots
+	if slots != nil {
+		slots <- struct{}{}
+	}
+	return slots
+}
+
+func releaseCandidateSlot(slots chan struct{}) {
+	if slots != nil {
+		<-slots
+	}
+}
+
 func Init() {
 	// BUG-FIX: test-source 子命令不初始化 CI（缓存实例），跳过依赖 CI 的操作避免 nil panic
 	if proxyinabox.CI != nil {
@@ -52,7 +100,11 @@ func Init() {
 	}
 
 	workers := configuredVerificationWorkers()
+	rate, burst := configuredValidationRate()
+	reserved := configuredRoutineReservedWorkers(workers)
 	validationSlots = make(chan struct{}, workers)
+	candidateSlots = make(chan struct{}, workers-reserved)
+	validationAttemptLimiter = newAttemptRateLimiter(rate, burst, time.Now())
 	ValidateJobs = make(chan proxyinabox.Proxy, workers*2)
 	for i := 1; i <= workers; i++ {
 		go validator(i, ValidateJobs)
@@ -146,6 +198,7 @@ func getDelay(pc chan proxyinabox.Proxy) {
 			}
 			deepVerified := needsDeepCheck(p, time.Now())
 			if deepVerified {
+				waitForValidationAttempt()
 				if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
 					runtimeMetrics.failTLSProbe.Add(1)
 					fmt.Printf("[PIAB] verify [🔓] proxy %s failed TLS hijack probe: %v\n", proxy, hijackErr)

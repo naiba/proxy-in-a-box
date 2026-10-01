@@ -194,6 +194,11 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 		}
 		func() {
 			defer pendingValidate.Delete(proxy)
+			defer func() {
+				if _, loaded := queuedCandidates.LoadAndDelete(proxy); loaded {
+					queuedCandidateCount.Add(-1)
+				}
+			}()
 
 			if proxyinabox.CI.IsIPLocked(p.IP) {
 				runtimeMetrics.skipIPLocked.Add(1)
@@ -215,11 +220,14 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 			}
 
 			runtimeMetrics.candidateWaiting.Add(1)
+			candidatePool := acquireCandidateSlot()
+			defer releaseCandidateSlot(candidatePool)
 			slots := acquireValidationSlot()
 			runtimeMetrics.candidateWaiting.Add(-1)
 			defer releaseValidationSlot(slots)
 			runtimeMetrics.candidateActive.Add(1)
 			defer runtimeMetrics.candidateActive.Add(-1)
+			recordSourceCandidateAttempt(p.Source)
 			start := time.Now().Unix()
 
 			body, requestErr := getURLThroughProxyWithRetryLimit(
@@ -237,18 +245,21 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 
 			if requestErr != nil {
 				checkCounters.recordCandidate(false)
+				recordSourceCandidateResult(p.Source, false)
 				recordNetworkFailure(requestErr)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				return
 			}
 			if parseErr != nil {
 				checkCounters.recordCandidate(false)
+				recordSourceCandidateResult(p.Source, false)
 				runtimeMetrics.failResponse.Add(1)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				return
 			}
 			if trace.IP != p.IP {
 				checkCounters.recordCandidate(false)
+				recordSourceCandidateResult(p.Source, false)
 				runtimeMetrics.failIPMismatch.Add(1)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
 				return
@@ -256,8 +267,10 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 
 			// New and recovered source candidates always receive a deep TLS
 			// integrity check before entering the live pool.
+			waitForValidationAttempt()
 			if hijackErr := probeTLSHijack(proxy); hijackErr != nil {
 				checkCounters.recordCandidate(false)
+				recordSourceCandidateResult(p.Source, false)
 				runtimeMetrics.failTLSProbe.Add(1)
 				fmt.Printf("[PIAB] crawler [🔓] %d proxy %s passed Cloudflare but failed TLS hijack probe: %v\n", id, proxy, hijackErr)
 				candidateFailures.recordFailure(proxy, 1, time.Now())
@@ -272,12 +285,14 @@ func validator(id int, validateJobs chan proxyinabox.Proxy) {
 
 			if e := proxyinabox.CI.UpsertProxy(p); e == nil {
 				checkCounters.recordCandidate(true)
+				recordSourceCandidateResult(p.Source, true)
 				candidateFailures.clear(proxy)
 				if proxyinabox.Config.Debug {
 					fmt.Println("[PIAB]", "crawler", "[✅]", id, "find a available proxy", p)
 				}
 			} else {
 				checkCounters.recordCandidate(false)
+				recordSourceCandidateResult(p.Source, false)
 				runtimeMetrics.failPersistence.Add(1)
 				fmt.Println("[PIAB]", "crawler", "[❎]", id, "error save proxy", e.Error())
 			}
@@ -398,7 +413,11 @@ func getURLThroughProxyWithRetryLimit(
 	}
 	var lastErr error
 	for i := 0; i < retry; i++ {
-		runtimeMetrics.networkAttempts.Add(1)
+		if proxyAddr != "" {
+			waitForValidationAttempt()
+		} else {
+			recordNetworkAttempt(time.Now(), false)
+		}
 		resp, err := httpClient.Do(request)
 		if err != nil {
 			lastErr = err
@@ -409,7 +428,7 @@ func getURLThroughProxyWithRetryLimit(
 			reader = io.LimitReader(resp.Body, responseBodyLimit+1)
 		}
 		body, err := io.ReadAll(reader)
-		runtimeMetrics.networkResponseBytes.Add(uint64(len(body)))
+		recordNetworkResponseBytes(time.Now(), uint64(len(body)), proxyAddr != "")
 		closeErr := resp.Body.Close()
 		if err != nil {
 			lastErr = err

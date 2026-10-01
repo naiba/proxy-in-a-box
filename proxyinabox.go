@@ -45,10 +45,13 @@ type Conf struct {
 	// Verification controls recurring health checks. Zero values use the
 	// conservative defaults defined by the crawler and service packages.
 	Verification struct {
-		Interval          time.Duration `mapstructure:"interval"`
-		DeepCheckInterval time.Duration `mapstructure:"deep_check_interval"`
-		Retries           int           `mapstructure:"retries"`
-		ResponseBodyLimit int64         `mapstructure:"response_body_limit"`
+		Interval               time.Duration `mapstructure:"interval"`
+		DeepCheckInterval      time.Duration `mapstructure:"deep_check_interval"`
+		Retries                int           `mapstructure:"retries"`
+		ResponseBodyLimit      int64         `mapstructure:"response_body_limit"`
+		MaxAttemptsPerSecond   int           `mapstructure:"max_attempts_per_second"`
+		AttemptBurst           int           `mapstructure:"attempt_burst"`
+		RoutineReservedWorkers int           `mapstructure:"routine_reserved_workers"`
 	} `mapstructure:"verification"`
 	// SourceFetch controls downloads of proxy lists. Source documents are
 	// fetched directly by default: routing them through an untrusted free proxy
@@ -56,10 +59,11 @@ type Conf struct {
 	// returned list. Proxy fallback remains opt-in for installations that need
 	// it for reachability.
 	SourceFetch struct {
-		ProxyFallback     bool          `mapstructure:"proxy_fallback"`
-		Retries           int           `mapstructure:"retries"`
-		Timeout           time.Duration `mapstructure:"timeout"`
-		ResponseBodyLimit int64         `mapstructure:"response_body_limit"`
+		ProxyFallback         bool          `mapstructure:"proxy_fallback"`
+		Retries               int           `mapstructure:"retries"`
+		Timeout               time.Duration `mapstructure:"timeout"`
+		ResponseBodyLimit     int64         `mapstructure:"response_body_limit"`
+		MaxCandidatesPerFetch int           `mapstructure:"max_candidates_per_fetch"`
 	} `mapstructure:"source_fetch"`
 	// EnableMITM 是否启用 HTTPS 中间人解密，默认 false（关闭时走 TCP 隧道透传，客户端无需关闭 TLS 验证）
 	EnableMITM bool `mapstructure:"enable_mitm"`

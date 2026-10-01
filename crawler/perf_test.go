@@ -16,6 +16,34 @@ func BenchmarkGetRuntimeStats(b *testing.B) {
 	}
 }
 
+func BenchmarkNetworkRateWindowRecord(b *testing.B) {
+	var window networkRateWindow
+	now := time.Now()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			window.record(now, 1, 0)
+		}
+	})
+}
+
+func BenchmarkAttemptRateLimiterReserve(b *testing.B) {
+	now := time.Now()
+	limiter := newAttemptRateLimiter(1_000_000_000, 1_000_000_000, now)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = limiter.Reserve(now)
+	}
+}
+
+func BenchmarkSourceCandidateLimit(b *testing.B) {
+	counter := sourceCandidateCounter{checks: 10_000, success: 20}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = sourceCandidateLimit(counter)
+	}
+}
+
 func BenchmarkParseTextResponseTenThousand(b *testing.B) {
 	var input strings.Builder
 	for i := 0; i < 10_000; i++ {

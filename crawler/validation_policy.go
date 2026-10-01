@@ -113,4 +113,10 @@ func (c *candidateFailureCache) prune(now time.Time) {
 	}
 }
 
+func (c *candidateFailureCache) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
 var candidateFailures = newCandidateFailureCache()

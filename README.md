@@ -124,6 +124,9 @@ verification:
   deep_check_interval: 24h     # additional TLS interception probe
   retries: 2                   # attempts per health-check round
   response_body_limit: 16384   # maximum health-check response bytes
+  max_attempts_per_second: 50  # process-wide validation rate limit (maximum 1000)
+  attempt_burst: 20            # token-bucket burst, capped at the rate limit
+  routine_reserved_workers: 4  # concurrency unavailable to source candidates
 
 # Source downloads (all optional; direct by default so bad proxies cannot delay them)
 source_fetch:
@@ -131,6 +134,7 @@ source_fetch:
   retries: 2                    # direct attempts (maximum 5)
   timeout: 20s                  # timeout per attempt
   response_body_limit: 4194304  # source response-body limit (default 4 MiB)
+  max_candidates_per_fetch: 200 # initial per-source validation admission limit
 
 # Headless browser for JS-rendered pages (optional)
 # Requires Obscura v0.2.1+ with the stealth build feature — included in the Docker image
@@ -140,6 +144,8 @@ obscura:
 ```
 
 Failed endpoints back off for 30 minutes, 2 hours, 6 hours, and then 24 hours. Repeated candidates returned by a source respect the same delay instead of consuming bandwidth on every source refresh.
+
+Candidate endpoints are deduplicated before entering the in-memory queue. After a source has 100 completed candidate checks, its per-fetch admission limit automatically drops to 100, 50, or 25 when its yield over the latest 256 results is below 1%, 0.5%, or 0.25%. The rolling window keeps sampling low-yield sources and automatically restores their limit if quality recovers. Runtime statistics expose the last-second, 60-second average and 60-second peak attempt rates; the token bucket prevents immediately failing endpoints from turning a concurrency limit into an unbounded request rate.
 
 ## Proxy Sources
 

@@ -24,11 +24,15 @@ verification:
   deep_check_interval: 36h
   retries: 4
   response_body_limit: 8192
+  max_attempts_per_second: 40
+  attempt_burst: 12
+  routine_reserved_workers: 5
 source_fetch:
   proxy_fallback: true
   retries: 3
   timeout: 12s
   response_body_limit: 1048576
+  max_candidates_per_fetch: 150
 `)); err != nil {
 		t.Fatalf("read config: %v", err)
 	}
@@ -67,10 +71,16 @@ source_fetch:
 	if config.Verification.ResponseBodyLimit != 8192 {
 		t.Errorf("verification response body limit = %d, want 8192", config.Verification.ResponseBodyLimit)
 	}
+	if config.Verification.MaxAttemptsPerSecond != 40 || config.Verification.AttemptBurst != 12 || config.Verification.RoutineReservedWorkers != 5 {
+		t.Errorf("verification resource limits = %d/%d/%d", config.Verification.MaxAttemptsPerSecond, config.Verification.AttemptBurst, config.Verification.RoutineReservedWorkers)
+	}
 	if !config.SourceFetch.ProxyFallback || config.SourceFetch.Retries != 3 {
 		t.Errorf("source fetch fallback/retries = %v/%d, want true/3", config.SourceFetch.ProxyFallback, config.SourceFetch.Retries)
 	}
 	if config.SourceFetch.Timeout != 12*time.Second || config.SourceFetch.ResponseBodyLimit != 1048576 {
 		t.Errorf("source fetch timeout/limit = %s/%d", config.SourceFetch.Timeout, config.SourceFetch.ResponseBodyLimit)
+	}
+	if config.SourceFetch.MaxCandidatesPerFetch != 150 {
+		t.Errorf("source max candidates per fetch = %d, want 150", config.SourceFetch.MaxCandidatesPerFetch)
 	}
 }
