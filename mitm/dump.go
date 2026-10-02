@@ -3,7 +3,6 @@ package mitm
 import (
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -63,6 +62,7 @@ func (m *MITM) Dump(clientResponse http.ResponseWriter, clientRequest *http.Requ
 	switch remoteResponse.Header.Get("Content-Encoding") {
 	case "gzip":
 		clientResponse.Header().Del("Content-Encoding")
+		clientResponse.Header().Del("Content-Length")
 		body, err = gzipDecompression(remoteResponse.Body)
 	default:
 		body, err = io.ReadAll(remoteResponse.Body)
@@ -177,7 +177,6 @@ func (m *MITM) doRequestThroughProxy(clientRequest *http.Request, p *url.URL) (*
 	}
 	transport := http.Transport{
 		DialContext:           dialer.DialContext,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
 		TLSHandshakeTimeout:   m.upstreamHandshakeTimeout(),
 		ResponseHeaderTimeout: m.upstreamResponseHeaderTimeout(),
 		ExpectContinueTimeout: time.Second,
@@ -224,34 +223,15 @@ func (m *MITM) doRequestThroughProxy(clientRequest *http.Request, p *url.URL) (*
 
 func copyResponseHeader(r *http.Response, c http.ResponseWriter) {
 	for k, v := range r.Header {
-		var vb []byte
-		for i := 0; i < len(v); i++ {
-			if i == len(v)-1 {
-				vb = append(vb, []byte(v[i])...)
-			} else {
-				vb = append(vb, []byte(v[i]+"; ")...)
-			}
-		}
-		c.Header().Set(k, string(vb))
+		c.Header()[k] = append([]string(nil), v...)
 	}
 }
 
 func gzipDecompression(r io.Reader) ([]byte, error) {
-	body := make([]byte, 0)
-	var err error
-	reader, _ := gzip.NewReader(r)
-	var n int
-	for {
-		buf := make([]byte, 102400)
-		n, err = reader.Read(buf)
-		if err != nil && err != io.EOF {
-			fmt.Println("[MITM]", "decompress gzip", "[❎]", err)
-			break
-		}
-		if n == 0 {
-			break
-		}
-		body = append(body, buf...)
+	reader, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, err
 	}
-	return body, err
+	defer reader.Close()
+	return io.ReadAll(reader)
 }

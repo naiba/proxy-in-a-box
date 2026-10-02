@@ -1,10 +1,23 @@
 package crawler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/naiba/proxyinabox"
 )
+
+func TestFetchJSONSourceReportsMalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json at all"))
+	}))
+	defer server.Close()
+	proxies, err := fetchJSONSource(Source{Name: "broken", Type: "json", URL: server.URL, IPField: "*.ip", PortField: "*.port"})
+	if err == nil {
+		t.Fatalf("malformed JSON was treated as healthy with %d proxies", len(proxies))
+	}
+}
 
 func TestParseTextResponse(t *testing.T) {
 	tests := []struct {
@@ -90,12 +103,13 @@ func TestParseTextResponse(t *testing.T) {
 
 func TestParseJSONResponse(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		src      Source
-		wantLen  int
-		wantIP   string
-		wantPort string
+		name      string
+		body      string
+		src       Source
+		wantLen   int
+		wantIP    string
+		wantPort  string
+		wantError bool
 	}{
 		{
 			name: "nested array with field paths",
@@ -143,12 +157,16 @@ func TestParseJSONResponse(t *testing.T) {
 				IPField:   "*.ip",
 				PortField: "*.port",
 			},
-			wantLen: 0,
+			wantLen:   0,
+			wantError: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			proxies := parseJSONResponse(tt.body, tt.src)
+			proxies, err := parseJSONResponse(tt.body, tt.src)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("parse error = %v, wantError = %v", err, tt.wantError)
+			}
 			if len(proxies) != tt.wantLen {
 				t.Fatalf("got %d proxies, want %d", len(proxies), tt.wantLen)
 			}

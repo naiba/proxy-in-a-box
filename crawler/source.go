@@ -224,7 +224,7 @@ func fetchJSONSource(src Source) ([]proxyinabox.Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseJSONResponse(body, src), nil
+	return parseJSONResponse(body, src)
 }
 
 // parseTextResponse parses a plain text body where each line is ip:port
@@ -264,11 +264,10 @@ func parseTextResponse(body string, src Source) []proxyinabox.Proxy {
 // parseJSONResponse parses a JSON body using field path extraction
 // Field paths like "proxies.*.ip" mean: access "proxies" (array), iterate elements, extract "ip"
 // Root array paths like "*.host" iterate the root array and extract "host"
-func parseJSONResponse(body string, src Source) []proxyinabox.Proxy {
+func parseJSONResponse(body string, src Source) ([]proxyinabox.Proxy, error) {
 	var raw interface{}
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
-		fmt.Printf("[PIAB] %s [❎] JSON parse error: %v\n", src.Name, err)
-		return nil
+		return nil, fmt.Errorf("parse JSON source %s: %w", src.Name, err)
 	}
 
 	ipValues := extractFieldPath(raw, src.IPField)
@@ -300,7 +299,7 @@ func parseJSONResponse(body string, src Source) []proxyinabox.Proxy {
 			Protocol: protocol,
 		})
 	}
-	return proxies
+	return proxies, nil
 }
 
 // extractFieldPath extracts values from parsed JSON using dot-path notation
